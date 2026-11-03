@@ -1,0 +1,61 @@
+# CI-only overlay: the dev overlay with every Pulso image swapped for a public
+# placeholder (hashicorp/http-echo), because the service images are built in their
+# own repositories and are not available to this pipeline.
+#
+# What it still proves end to end on a real cluster: the manifests are accepted by the
+# API server and Pod Security Admission ("restricted"), the non-root/read-only security
+# contexts run, probes on the named ports pass, Services/Ingress route to the pods,
+# NetworkPolicies let ingress-nginx through, and Postgres/Redis StatefulSets come up
+# with their PVCs. What it does not prove: the real services' behaviour.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pulso
+
+resources:
+  - ../../overlays/dev
+
+images:
+  - name: ghcr.io/pulso/pulso-orders-api
+    newName: hashicorp/http-echo
+    newTag: 0.2.3
+  - name: ghcr.io/pulso/pulso-matching
+    newName: hashicorp/http-echo
+    newTag: 0.2.3
+  - name: ghcr.io/pulso/pulso-support-agents
+    newName: hashicorp/http-echo
+    newTag: 0.2.3
+  - name: ghcr.io/pulso/pulso-saga
+    newName: hashicorp/http-echo
+    newTag: 0.2.3
+
+# http-echo answers 200 on every path, listening on each service's real port.
+patches:
+  - target:
+      kind: Deployment
+      name: orders-api
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args
+        value: ["-listen=:3000", "-text=pulso-orders-api placeholder"]
+  - target:
+      kind: Deployment
+      name: matching
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args
+        value: ["-listen=:8000", "-text=pulso-matching placeholder"]
+  - target:
+      kind: Deployment
+      name: support-agents
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args
+        value: ["-listen=:8080", "-text=pulso-support-agents placeholder"]
+  - target:
+      kind: Deployment
+      name: saga
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args
+        value: ["-listen=:8090", "-text=pulso-saga placeholder"]
