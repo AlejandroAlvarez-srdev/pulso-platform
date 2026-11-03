@@ -43,7 +43,7 @@ render: ## kustomize build every overlay and helm template the chart into render
 	./scripts/render.sh
 
 .PHONY: validate
-validate: render ## kubeconform + kube-linter + platform policy on rendered overlays and chart
+validate: render ## kubeconform + kube-linter + policy + trivy on rendered overlays and chart
 	PYTHON=$(PYTHON) ./scripts/validate.sh
 
 .PHONY: compose-config

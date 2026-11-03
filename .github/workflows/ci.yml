@@ -16,7 +16,7 @@ env:
   KUSTOMIZE_VERSION: "5.4.3"
   KUBECONFORM_VERSION: "0.6.7"
   KUBE_LINTER_VERSION: "0.7.1"
-  K8S_SCHEMA_VERSION: "1.30.0"
+  TRIVY_VERSION: "0.56.2"
   INGRESS_NGINX_REF: "controller-v1.11.5"
 
 jobs:
@@ -51,8 +51,67 @@ jobs:
           for svc in orders-api matching support-agents saga; do mkdir -p "../pulso-${svc}"; done
           docker compose --env-file .env.example config --quiet
 
-  manifests:
-    name: Render and validate manifests
+  render:
+    name: Render manifests (Kustomize + Helm)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kustomize
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$HOME/bin" kustomize
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm lint (default, dev and prod values)
+        run: make helm-lint
+
+      - name: Render overlays, examples and the chart (helm template)
+        run: make render
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+
+  schemas:
+    # The same manifests must be valid on every Kubernetes minor we may run.
+    name: kubeconform (Kubernetes ${{ matrix.kubernetes }})
+    needs: render
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        kubernetes: ["1.29.0", "1.30.0", "1.31.0"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+
+      - name: Install kubeconform
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "$HOME/bin" kubeconform
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: kubeconform (strict, core schemas + CRD catalog)
+        run: ./scripts/validate.sh schemas
+        env:
+          K8S_VERSION: ${{ matrix.kubernetes }}
+
+  lint-manifests:
+    name: kube-linter + platform policy
+    needs: render
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -66,52 +125,48 @@ jobs:
       - name: Install Python tooling
         run: pip install -r requirements-dev.txt
 
-      - name: Install kustomize, kubeconform and kube-linter
-        run: |
-          mkdir -p "$HOME/bin" /tmp/tools
-          fetch() { mkdir -p "/tmp/tools/$1" && curl -fsSL "$2" | tar -xz -C "/tmp/tools/$1"; }
-          fetch kustomize "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
-          fetch kubeconform "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
-          fetch kube-linter "https://github.com/stackrox/kube-linter/releases/download/v${KUBE_LINTER_VERSION}/kube-linter-linux.tar.gz"
-          for tool in kustomize kubeconform kube-linter; do
-            install -m 0755 "$(find "/tmp/tools/${tool}" -type f -name "${tool}" | head -n1)" "$HOME/bin/${tool}"
-          done
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-
-      - uses: azure/setup-helm@v4
-        with:
-          version: v3.16.2
-
-      - name: helm lint (default, dev and prod values)
-        run: make helm-lint
-
-      - name: Tool versions
-        run: |
-          helm version
-          kustomize version
-          kubeconform -v
-          kube-linter version
-
-      - name: Render overlays (dev, prod, kind-smoke) and the chart (helm template)
-        run: make render
-
-      - name: kubeconform + kube-linter + platform policy
-        run: ./scripts/validate.sh
-        env:
-          K8S_VERSION: ${{ env.K8S_SCHEMA_VERSION }}
-
-      - name: Upload rendered manifests
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: rendered-manifests
           path: rendered/
-          if-no-files-found: ignore
+
+      - name: Install kube-linter
+        run: |
+          mkdir -p "$HOME/bin" /tmp/kube-linter
+          curl -fsSL "https://github.com/stackrox/kube-linter/releases/download/v${KUBE_LINTER_VERSION}/kube-linter-linux.tar.gz" \
+            | tar -xz -C /tmp/kube-linter
+          install -m 0755 "$(find /tmp/kube-linter -type f -name kube-linter | head -n1)" "$HOME/bin/kube-linter"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: kube-linter and policy_check
+        run: ./scripts/validate.sh lint
+
+  security:
+    name: trivy config scan
+    needs: render
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+
+      - name: Install trivy
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            | tar -xz -C "$HOME/bin" trivy
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Misconfigurations in rendered manifests and the chart (HIGH, CRITICAL)
+        run: ./scripts/validate.sh security
 
   kind-smoke:
     # Real cluster, placeholder images: see k8s/ci/kind-smoke/kustomization.yaml.
     name: Deploy to kind (placeholder images)
-    needs: [lint-test, manifests]
+    needs: [lint-test, schemas, lint-manifests, security]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
