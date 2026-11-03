@@ -1,0 +1,192 @@
+# Zero-trust baseline: deny everything, then allow each flow explicitly.
+# Traffic from the pod's own node (kubelet probes) is always allowed by the NetworkPolicy spec.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# orders-api: public (via ingress-nginx) and called by saga and support-agents.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orders-api-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orders-api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: saga
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: support-agents
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# support-agents: public (via ingress-nginx) only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: support-agents-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: support-agents
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# matching: internal, only the saga orchestrator asks for assignments.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: matching-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: matching
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: saga
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# saga -> orders-api and matching (synchronous steps of the saga).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saga-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: saga
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orders-api
+      ports:
+        - protocol: TCP
+          port: 3000
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: matching
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# support-agents -> orders-api (order lookups for the agents' tools).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: support-agents-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: support-agents
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orders-api
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# Third-party HTTPS: payment provider (orders-api) and the LLM API (support-agents).
+# Private ranges are excluded so this rule can never be used to reach in-cluster services.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-https-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["orders-api", "support-agents"]
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Application pods -> Postgres and Redis. Dev points at in-cluster StatefulSets;
+# the prod overlay replaces the destinations with the managed services' CIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-data-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: ["api", "worker"]
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379

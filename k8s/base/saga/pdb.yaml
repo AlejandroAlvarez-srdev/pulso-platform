@@ -1,0 +1,13 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: saga
+  labels:
+    app.kubernetes.io/name: saga
+spec:
+  # maxUnavailable (not minAvailable) so a single-replica dev deployment can still be drained.
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: saga

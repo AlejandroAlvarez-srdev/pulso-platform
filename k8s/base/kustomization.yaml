@@ -1,0 +1,91 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pulso
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: pulso
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - namespace.yaml
+  - network-policies.yaml
+  - ingress.yaml
+  - orders-api/serviceaccount.yaml
+  - orders-api/deployment.yaml
+  - orders-api/service.yaml
+  - orders-api/hpa.yaml
+  - orders-api/pdb.yaml
+  - matching/serviceaccount.yaml
+  - matching/deployment.yaml
+  - matching/service.yaml
+  - matching/hpa.yaml
+  - matching/pdb.yaml
+  - support-agents/serviceaccount.yaml
+  - support-agents/deployment.yaml
+  - support-agents/service.yaml
+  - support-agents/hpa.yaml
+  - support-agents/pdb.yaml
+  - saga/serviceaccount.yaml
+  - saga/deployment.yaml
+  - saga/service.yaml
+  - saga/pdb.yaml
+
+# Non-secret runtime configuration. Generated names carry a content hash, so changing
+# a value rolls the Deployments that reference it.
+configMapGenerator:
+  - name: orders-api-config
+    literals:
+      - PORT=3000
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      # ~75% of the memory limit; keeps V8 below the cgroup limit instead of getting OOMKilled.
+      - NODE_OPTIONS=--max-old-space-size=288
+      - DEFAULT_CURRENCY=MXN
+      - EVENTS_STREAM=pulso.events
+  - name: matching-config
+    literals:
+      - PORT=8000
+      - LOG_LEVEL=info
+      - WEB_CONCURRENCY=2
+      - MATCHING_MAX_RADIUS_KM=8
+  - name: support-agents-config
+    literals:
+      - PORT=8080
+      - LOG_LEVEL=info
+      - WEB_CONCURRENCY=2
+      - ORDERS_API_URL=http://orders-api
+  - name: saga-config
+    literals:
+      - PORT=8090
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - NODE_OPTIONS=--max-old-space-size=192
+      - ORDERS_API_URL=http://orders-api
+      - MATCHING_URL=http://matching
+      - EVENTS_STREAM=pulso.events
+      - PAYMENT_TIMEOUT_SECONDS=30
+
+# DUMMY values, valid only for local clusters. The prod overlay replaces every one of
+# these Secrets with values injected by the release pipeline (see README > Secrets).
+secretGenerator:
+  - name: orders-api-secrets
+    literals:
+      - DATABASE_URL=postgres://pulso:pulso-dev-only@postgres:5432/orders
+      - REDIS_URL=redis://redis:6379/0
+      - PAYMENT_PROVIDER_API_KEY=sk_test_dummy
+  - name: matching-secrets
+    literals:
+      - REDIS_URL=redis://redis:6379/1
+  - name: support-agents-secrets
+    literals:
+      - DATABASE_URL=postgres://pulso:pulso-dev-only@postgres:5432/support
+      - REDIS_URL=redis://redis:6379/2
+      - LLM_API_KEY=dummy-llm-key
+  - name: saga-secrets
+    literals:
+      - DATABASE_URL=postgres://pulso:pulso-dev-only@postgres:5432/saga
+      - REDIS_URL=redis://redis:6379/0

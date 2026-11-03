@@ -1,0 +1,32 @@
+# Public entry point. Only the merchant-facing APIs are routed; matching and saga stay internal.
+#   /api/orders/...  -> orders-api     (prefix stripped: /api/orders/health -> /health)
+#   /api/support/... -> support-agents
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pulso-public
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pulso.localtest.me
+      http:
+        paths:
+          - path: /api/orders(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: orders-api
+                port:
+                  name: http
+          - path: /api/support(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: support-agents
+                port:
+                  name: http
