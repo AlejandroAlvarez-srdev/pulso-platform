@@ -2,27 +2,32 @@
 
 Deployment platform for **Pulso**, an on-demand micro-task marketplace: merchants post
 orders (pick up and deliver, buy something in a store), independent "pulsers" accept and
-run them. This repository does not contain application code. It holds everything needed
-to run the four Pulso services together:
+run them. This repository has no application code. It holds everything needed to build,
+deploy, observe and operate the four Pulso services:
 
-- **Docker Compose** for local development, building each service from its sibling repository.
-- **Kubernetes manifests** organised with **Kustomize**: one hardened `base` plus `dev` and `prod` overlays.
-- **CI** that renders every overlay, validates it against the Kubernetes schemas and two linters,
-  then deploys the dev overlay to a throwaway **kind** cluster and smoke-tests it.
+- **Docker Compose** for local development, built from the sibling service repositories.
+- **Kubernetes manifests** with **Kustomize** (hardened `base`, `dev` and `prod` overlays) and an
+  equivalent **Helm chart**.
+- **GitOps** with **Argo CD** (app-of-apps), **progressive delivery** with **Argo Rollouts**,
+  secrets from **External Secrets Operator**.
+- **Observability** with **kube-prometheus-stack**: ServiceMonitor, RED alerts, Grafana dashboard.
+- **CI** that renders everything, validates it against three Kubernetes versions, two
+  linters, a policy engine and trivy, then deploys to a throwaway **kind** cluster.
 
 > Pulso is a fictional company used to explore these patterns.
 
-| Service | Repo | Stack | Port | Exposure |
-|---|---|---|---|---|
-| orders-api | `pulso-orders-api` | NestJS | 3000 | public `/api/orders` |
-| matching | `pulso-matching` | FastAPI | 8000 | internal |
-| support-agents | `pulso-support-agents` | FastAPI | 8080 | public `/api/support` |
-| saga | `pulso-saga` | orchestrator (Node) | 8090 | internal |
-| postgres | - | Postgres 16 | 5432 | dev: StatefulSet, prod: managed |
-| redis | - | Redis 7.2 | 6379 | dev: StatefulSet, prod: managed |
+| Service | Repo | Stack | Container port | Health | Exposure |
+|---|---|---|---|---|---|
+| orders-api | `pulso-orders-api` | NestJS + Prisma | 3000 (`$PORT`) | `/health` (checks Postgres) | public `/api/orders` |
+| matching | `pulso-matching` | FastAPI | 8000 (fixed) | `/health` | internal |
+| support-agents | `pulso-support-agents` | FastAPI + LangGraph | 8000 (fixed) | `/healthz` | public `/api/support` |
+| saga | `pulso-saga` | Node orchestrator | 8090 (`$PORT`, default 3000) | `/health` | internal |
+| postgres | - | Postgres 16 | 5432 | `pg_isready` | dev: StatefulSet, prod: managed |
+| redis | - | Redis 7.2 | 6379 | `redis-cli ping` | dev: StatefulSet, prod: managed |
 
-Every service answers `GET /health` on the port above and reads its port from `PORT`.
-That is the whole contract between this repo and the service repos.
+The ports, health paths and environment variables above were checked against each
+service repository. `tests/support.py` pins them, and every manifest, the chart, compose
+and the smoke test are tested against that table.
 
 ## Architecture
 
@@ -30,24 +35,23 @@ That is the whole contract between this repo and the service repos.
 flowchart LR
     client([Merchants / pulsers]) -->|HTTPS| ing
 
-    subgraph cluster["Kubernetes namespace pulso (PSA restricted, default-deny NetworkPolicies)"]
+    subgraph cluster["Namespace pulso (PSA restricted, default-deny NetworkPolicies)"]
         ing[ingress-nginx<br/>Ingress pulso-public]
-        ing -->|/api/orders| orders[orders-api<br/>Deployment + HPA + PDB]
-        ing -->|/api/support| support[support-agents<br/>Deployment + HPA + PDB]
-        saga[saga orchestrator<br/>Deployment + PDB] -->|reserve / assign| orders
-        saga -->|score pulsers| matching[matching<br/>Deployment + HPA + PDB]
-        support -->|order lookups| orders
+        ing -->|/api/orders| orders[orders-api<br/>HPA + PDB]
+        ing -->|/api/support| support[support-agents<br/>1 replica + PDB]
+        saga[saga orchestrator<br/>PDB] -.->|assignment step| matching[matching<br/>HPA + PDB]
+        migrate[[orders-api-migrate<br/>Job / Sync hook]]
 
         subgraph data["dev overlay only"]
-            pg[(Postgres<br/>StatefulSet)]
-            rd[(Redis<br/>StatefulSet)]
+            pg[(Postgres)]
+            rd[(Redis Streams)]
         end
     end
 
-    orders --> pg & rd
-    saga --> pg & rd
-    support --> pg & rd
-    matching --> rd
+    orders --> pg
+    migrate --> pg
+    saga --> rd
+    support -->|443| llm[[LLM API]]
 
     subgraph managed["prod: managed services"]
         rds[(Managed Postgres)]
@@ -56,293 +60,317 @@ flowchart LR
     orders -. prod .-> rds
     saga -. prod .-> cache
 
-    orders -->|443| psp[[Payment provider]]
-    support -->|443| llm[[LLM API]]
+    subgraph monitoring["Namespace monitoring"]
+        prom[Prometheus] --> graf[Grafana]
+        prom --> am[Alertmanager]
+    end
+    prom -->|/metrics| orders & matching & support & saga
 ```
 
-Each arrow is also a NetworkPolicy rule: anything not drawn is denied. `matching` and
-`saga` are never routed by the ingress, and the smoke test checks that
-`/api/matching` returns 404.
+```mermaid
+flowchart LR
+    dev[PR merged to main] --> argo{{Argo CD}}
+    promo[Promotion PR to prod branch] --> argo
+    argo -->|pulso-dev: auto sync, prune| devc[(dev cluster)]
+    argo -->|pulso-prod: self-heal, sync window| prodc[(prod cluster)]
+    argo -->|monitoring + pulso-observability| prodc
+    eso[External Secrets Operator] -->|AWS Secrets Manager| prodc
+    rollouts[Argo Rollouts] -->|orders-api canary 10/25/50%| prodc
+```
+
+Each arrow in the first diagram is also a NetworkPolicy rule: anything not drawn is
+denied. `saga → matching` is the integration contract for the saga's assignment step.
+pulso-saga simulates its participants over Redis Streams today, and compose runs that
+simulator as `saga-participants`.
 
 ## Repository layout
 
 ```
-docker-compose.yml          local stack (build contexts ../pulso-*)
-.env.example                optional overrides for compose
+docker-compose.yml           local stack: data stores, orders-migrate, 4 services, saga-participants
 k8s/
-  base/                     Namespace, NetworkPolicies, Ingress, per-service SA/Deployment/Service/HPA/PDB,
-                            configMapGenerator + secretGenerator (dummy values)
-  overlays/dev/             :dev tags, small requests, HPA 1-2, Postgres + Redis StatefulSets
-  overlays/prod/            release tags, HPA 3-12, zone spread, TLS, managed data egress, injected secrets
-  ci/kind-smoke/            dev overlay with public placeholder images (CI only)
-  kind/cluster.yaml         kind config prepared for ingress-nginx
-scripts/
-  render.sh                 kustomize build of every overlay into rendered/
-  validate.sh               kubeconform + kube-linter + policy_check on rendered/
-  policy_check.py           platform policy and cross-object consistency checks
-  wait-ready.sh             rollout status for StatefulSets and Deployments
-  smoke.sh                  port-forward + curl /health, then ingress routing checks
-tests/                      unit tests for the policy, consistency tests for manifests and compose
+  base/                      Namespace, NetworkPolicies, Ingress, per-service SA/Deployment/Service/HPA/PDB,
+                             orders-api migration Job, ConfigMaps (secret names only)
+  overlays/dev/              :dev tags, small requests, HPA 1-2, dummy Secrets, Postgres + Redis StatefulSets
+  overlays/prod/             release tags, HPA 3-12, zone spread, TLS, ExternalSecrets, managed-data egress
+  components/orders-api-canary/   Argo Rollouts canary (opt-in Kustomize component)
+  examples/prod-canary/      prod + canary component (rendered and validated in CI)
+  observability/             ServiceMonitor, PrometheusRule (RED + workload alerts), Grafana dashboard
+  ci/kind-smoke/             dev overlay with public placeholder images (CI only)
+  kind/cluster.yaml          kind config prepared for ingress-nginx
+charts/pulso/                Helm chart equivalent to base + overlays (values-dev.yaml, values-prod.yaml)
+argocd/                      root.yaml (app of apps) and apps/ (AppProject, dev, prod, monitoring, observability)
+observability/kube-prometheus-stack/values.yaml
+docs/RUNBOOK.md              incident checklist, deploy/rollback, scaling playbook, troubleshooting
+scripts/                     render.sh, validate.sh (schemas|lint|security), policy_check.py, wait-ready.sh, smoke.sh
+tests/                       83 tests: policy rules, manifests, chart parity, GitOps, observability, canary
 ```
 
 ## Running it
 
-### Local development with Docker Compose
+### Docker Compose
 
-Clone the service repos next to this one:
-
-```
-pulso/
-  pulso-platform/   pulso-orders-api/   pulso-matching/   pulso-support-agents/   pulso-saga/
-```
+Clone the service repositories next to this one (`pulso/pulso-orders-api`, `pulso/pulso-matching`,
+`pulso/pulso-support-agents`, `pulso/pulso-saga`), then:
 
 ```bash
 cp .env.example .env      # optional, every variable has a default
 make compose-up           # docker compose up --build -d --wait
-docker compose ps         # all services should be "healthy"
-curl localhost:3000/health
+docker compose ps         # all long-running services "healthy", orders-migrate "exited (0)"
+curl localhost:3000/health          # orders-api
+curl localhost:8080/healthz         # support-agents (container :8000, published on 8080)
+curl -X POST localhost:8090/orders  # start a saga; saga-participants plays payments/matching
 make compose-down
 ```
 
-Startup order comes from `depends_on: condition: service_healthy`: Postgres and Redis
-first, then orders-api and matching, then support-agents and saga. Healthchecks use the
-runtime already present in each image (`node -e fetch(...)`, `python -c urllib...`)
-because slim images ship without curl. Data lives in the named volumes `postgres-data`
-and `redis-data`. Postgres creates one database per service from
-`k8s/overlays/dev/data/postgres-init.sql`, the same file the dev overlay mounts.
+Startup order is declared, not hoped for:
+
+1. Postgres and Redis start first and must report healthy.
+2. `orders-migrate` (Prisma `migrate deploy` plus an idempotent seed, from the repo's `build`
+   stage) must exit 0 before orders-api starts (`service_completed_successfully`).
+3. saga waits for Redis.
+
+Healthchecks use the runtime already present in each image (`node -e fetch(...)` or
+`python -c urllib...`). App containers run read-only with all capabilities dropped. Postgres,
+Redis and the support-agents SQLite checkpoints persist in named volumes.
 
 ### Kubernetes on kind
 
-Requirements: `docker`, `kind`, `kubectl` (v1.27 or newer, for the built-in kustomize).
+Requirements: `docker`, `kind` and `kubectl` 1.27 or newer.
 
 ```bash
 make kind-up        # kind cluster + ingress-nginx
-make kind-load      # docker build ../pulso-* as ghcr.io/pulso/*:dev and load into kind
-make deploy-dev     # kubectl apply -k k8s/overlays/dev, then wait for every rollout
-make smoke          # port-forward each Service, GET /health, then test ingress routing
-curl -H 'Host: pulso.localtest.me' localhost/api/orders/health
+make kind-load      # build ../pulso-* (and the orders-api migrate stage) as :dev and load into kind
+make deploy-dev     # kubectl apply -k k8s/overlays/dev, wait for StatefulSets, the migration Job, Deployments
+make smoke          # port-forward each Service, GET its health path, then test ingress routing
 make kind-down
 ```
 
-Without the service repos, `make deploy-smoke` deploys the same overlay with placeholder
-images, exactly as CI does.
+`make deploy-smoke` deploys the same overlay with placeholder images, as CI does.
+`make helm-deploy-dev` installs the chart instead of the overlay.
 
 ### Checks that need no cluster
 
 ```bash
 pip install -r requirements-dev.txt
-make lint           # yamllint + shellcheck
-make test           # 42 unit/consistency tests
-make prod-secrets-placeholder && make validate   # needs kustomize, kubeconform, kube-linter
+make lint test                  # yamllint + shellcheck, 83 Python tests
+make helm-lint validate         # needs helm, kustomize, kubeconform, kube-linter, trivy
 ```
 
-## CI
+## Kustomize and Helm
 
-`.github/workflows/ci.yml` runs three jobs:
+Kustomize is the source of truth that Argo CD syncs. The Helm chart renders the same
+objects from one values model per service, for teams that consume Helm. `test_helm_chart.py`
+keeps them aligned: ports, health paths, liveness type, env, resources, autoscaling, image
+tags, secret keys and network flows.
 
-1. **Lint and tests**: yamllint, shellcheck, the Python test suite and `docker compose config`.
-   The sibling build contexts are created as empty directories, which is enough for compose
-   to resolve the file.
-2. **Render and validate manifests**: `kustomize build` for `dev`, `prod` and `kind-smoke`,
-   then **kubeconform** (strict, Kubernetes 1.30 schemas), **kube-linter** (default checks)
-   and `policy_check.py`. The rendered YAML is uploaded as a build artifact.
-3. **Deploy to kind (placeholder images)**: creates a kind cluster, installs ingress-nginx,
-   applies `k8s/ci/kind-smoke`, waits for every rollout and runs `make smoke`. On failure it
-   dumps pods, events and logs.
-
-### Why placeholder images in the kind job
-
-The service images are built and published by their own repositories, so this pipeline
-cannot pull them. `k8s/ci/kind-smoke` takes the **dev overlay unchanged** and only swaps
-each `ghcr.io/pulso/*` image for `hashicorp/http-echo:0.2.3`, listening on that
-service's real port. http-echo answers 200 on every path, so `/health` works.
-
-What this proves on a real API server:
-
-- the manifests are accepted, including Pod Security Admission `restricted` on the namespace;
-- the non-root, read-only, capability-free security contexts actually start;
-- startup, readiness and liveness probes on the named ports pass;
-- Services select the right pods, and the Ingress path rewrites route correctly;
-- NetworkPolicies let ingress-nginx through and keep `matching` off the public edge;
-- Postgres and Redis StatefulSets initialise with PVCs under the same restricted profile.
-
-What it does not prove: anything about the services' own behaviour. That is tested in
-each service's repository.
-
-## Kustomize: base and overlays
-
-| | base | dev | prod |
+| | base / `values.yaml` | dev | prod |
 |---|---|---|---|
 | Image tags | `0.1.0` | `dev` | pinned release tags (`1.4.2`, ...) |
-| API replicas | HPA 2-6 | HPA 1-2 | HPA 3-12 |
-| saga replicas | 1 | 1 | 2 (`replicas:` field) |
-| Requests / limits | moderate | small requests | per-service patches |
-| Scheduling | preferred pod anti-affinity | same | plus zone `topologySpreadConstraints` |
-| Ingress | `pulso.localtest.me` | same | `api.pulso.example` with TLS (cert-manager) |
-| Postgres / Redis | not included | StatefulSets + PVCs | managed services, egress to their CIDR |
-| Secrets | dummy `secretGenerator` | dummy | `behavior: replace` from pipeline-written env files |
-| Log level | info | debug | info |
+| orders-api, matching | HPA 2-6 | HPA 1-2 | HPA 3-12 |
+| saga | 1 replica | 1 | 2 |
+| support-agents | 1 replica (SQLite checkpoints) | 1 | 1, bigger limits |
+| Secrets | names only | dummy `secretGenerator` | ExternalSecrets (AWS Secrets Manager via IRSA) |
+| Postgres / Redis | not included | StatefulSets + PVCs | managed, egress limited to their CIDRs |
+| Ingress | `pulso.localtest.me` | same | `api.pulso.example`, TLS via cert-manager |
+| Scheduling | preferred anti-affinity | same | plus zone `topologySpreadConstraints` |
+| Extras | | | Reloader annotation, LLM provider `anthropic` |
 
 ### Secrets
 
-The base `secretGenerator` holds **dummy values**, valid only on local clusters.
-In prod every one of these Secrets is replaced (`behavior: replace`) from
-`k8s/overlays/prod/secrets/<service>.env`. Those files are gitignored. The release
-pipeline writes them from the secret manager just before `kustomize build`, and the
-committed `*.env.example` files document the keys. CI renders with the templates
-(`make prod-secrets-placeholder`). In a larger setup the same slot would be filled by
-External Secrets Operator or SOPS. Generated names carry a content hash, so rotating a
-secret rolls the Deployments that use it.
+Base only references Secret names: `orders-api-secrets`, `support-agents-secrets` and
+`saga-secrets`. Dev generates them with dummy values. Prod creates them with
+**ExternalSecrets** from a `SecretStore` for AWS Secrets Manager. The `external-secrets-reader`
+ServiceAccount maps through IRSA to a role that can only read `pulso/prod/*`.
+`deletionPolicy: Retain` keeps the last good Secret if an ExternalSecret is removed by
+mistake. Because ESO keeps names stable, rotation does not change pod specs, so
+**Reloader** (`reloader.stakater.com/auto`) restarts the affected Deployments.
+
+## GitOps with Argo CD
+
+`argocd/root.yaml` is applied once (`make argocd-bootstrap`). It syncs `argocd/apps/`:
+
+- **AppProject `pulso`**: allowed repos, destinations and cluster-scoped kinds, plus a sync
+  window that limits *automated* prod syncs to working hours. Manual syncs are always allowed.
+- **pulso-dev**: `k8s/overlays/dev` from `main`, automated with prune and self-heal.
+- **pulso-prod**: `k8s/overlays/prod` from the `prod` branch. Promotion is a reviewed PR
+  that bumps image tags. Self-heal is on. Prune is manual, so deleting a resource needs
+  an explicit sync.
+- **monitoring**: kube-prometheus-stack 65.1.1 as a multi-source app (chart plus values from
+  this repo), with server-side apply because its CRDs are too large for client-side
+  apply.
+- **pulso-observability**: `k8s/observability`.
+
+Sync waves order the namespace and SecretStore (-3), then Secrets, ExternalSecrets and dev
+data stores (-2), then the orders-api migration (-1, an Argo CD **Sync hook**), then
+Deployments (0). Because the migration is a hook, the Job's TTL cleanup never shows as drift.
+
+## Progressive delivery
+
+`k8s/components/orders-api-canary` is an opt-in Kustomize component that turns orders-api
+into an **Argo Rollouts** canary:
+
+- The Rollout adopts the existing Deployment through `workloadRef` (scaled down
+  progressively), so the pod template stays in one place.
+- ingress-nginx shifts 10% → 25% → 50% of traffic through a canary Service, then waits at a
+  manual promotion gate.
+- An `AnalysisTemplate` queries Prometheus every minute for the canary's success rate,
+  using the ServiceMonitor's `rollouts-pod-template-hash` label. Two results below 99%, or
+  no data, abort the rollout and send all traffic back to stable.
+- The HPA is retargeted to the Rollout.
+
+`k8s/examples/prod-canary` (prod plus the component) is rendered and validated in CI. Turning
+it on for real means adding `components: [../../components/orders-api-canary]` to the prod
+overlay once the Rollouts controller is installed **and orders-api exports the metrics
+contract**. Without metrics the analysis is inconclusive, so every canary would abort,
+which is the safe failure mode. The same pattern applies to matching.
+
+## Observability
+
+`observability/kube-prometheus-stack/values.yaml` configures the stack:
+
+- Prometheus selects ServiceMonitors and rules from every namespace and keeps 15 days of
+  data on a 50 Gi PVC.
+- Alertmanager routes `severity=page` to on-call and `ticket` to a queue.
+- Grafana loads dashboards from labelled ConfigMaps, and its admin password comes from an
+  existing Secret.
+
+`k8s/observability` adds:
+
+- **ServiceMonitor** `pulso-services`: `/metrics` on each Service's `http` port, with the job
+  label set to the service name.
+- **PrometheusRule** `pulso-services`:
+  - RED recording rules;
+  - `PulsoHighErrorRate` (5xx above 5%, page) and `PulsoHighLatency` (p95 above 500 ms);
+  - `PulsoMetricsMissing`, `PulsoPodCrashLooping`, `PulsoContainerOOMKilled` and `PulsoHPAAtMaximum`.
+
+  Each alert links to its section in `docs/RUNBOOK.md`.
+- **Grafana dashboard** "Pulso / Services (RED)": throughput, 5xx ratio, p50/p95/p99, p95
+  by route, status breakdown and restarts, filterable by service.
+
+A NetworkPolicy (`allow-prometheus-scrape`) lets Prometheus in the `monitoring` namespace
+reach the service ports.
+
+**Metrics contract.** Dashboards and alerts expect `http_requests_total{method,route,status}`
+and the histogram `http_request_duration_seconds{method,route,status}`.
+
+**The services do not expose `/metrics` yet.** prom-client and
+prometheus-fastapi-instrumentator can emit those names. Until the services are
+instrumented, `PulsoMetricsMissing` fires by design.
+
+## CI
+
+`.github/workflows/ci.yml`:
+
+| Job | What |
+|---|---|
+| Lint and tests | yamllint, shellcheck, the Python test suite, `docker compose config` |
+| Render | `helm lint` (default, dev and prod values), `kustomize build` of dev, prod, kind-smoke, observability and prod-canary, `helm template` with dev and prod values; uploads `rendered/` |
+| kubeconform (matrix) | strict validation against **Kubernetes 1.29, 1.30 and 1.31** schemas, plus the CRD catalog for ExternalSecret, ServiceMonitor, PrometheusRule, Rollout, AnalysisTemplate and Argo CD Application/AppProject |
+| kube-linter + policy | kube-linter on the Kustomize and Helm renders; `policy_check.py` also on prod-canary |
+| trivy config | misconfiguration scan of the rendered manifests and the chart; HIGH or CRITICAL fails |
+| Deploy to kind | kind + ingress-nginx, applies `k8s/ci/kind-smoke`, waits for StatefulSets, the migration Job and Deployments, runs `make smoke`, dumps diagnostics on failure |
+
+### Why placeholder images in the kind job
+
+The service images are published by their own repositories, so this pipeline cannot pull
+them. `k8s/ci/kind-smoke` takes the dev overlay unchanged and swaps each service image for
+`hashicorp/http-echo` listening on that service's real port, and the migration image for
+`busybox`. That proves:
+
+- the API server and Pod Security `restricted` accept everything;
+- the non-root, read-only security contexts start;
+- probes on the named ports pass;
+- Services and Ingress rewrites route, and NetworkPolicies admit ingress-nginx while
+  keeping matching off the edge;
+- Postgres and Redis initialise with PVCs;
+- the migration Job completes before the smoke test.
+
+It says nothing about the services' own behaviour, which is tested in their repositories.
 
 ## Runbook
 
-All commands assume `-n pulso`. `make status` shows pods, HPAs, PDBs and recent events.
+See **[docs/RUNBOOK.md](docs/RUNBOOK.md)**. It covers:
 
-### Deploy
-
-```bash
-# prod: the pipeline bumps the tag in k8s/overlays/prod/kustomization.yaml (images:), then
-kustomize build k8s/overlays/prod | kubectl apply -f -
-NAMESPACE=pulso ./scripts/wait-ready.sh
-```
-
-Deployments use `maxUnavailable: 0, maxSurge: 1`, so capacity never drops during a
-rollout, and a pod that never becomes ready stops the rollout on its own.
-
-### Roll back
-
-```bash
-make rollback SVC=orders-api               # kubectl rollout undo + wait
-kubectl rollout history deployment/orders-api
-kubectl rollout undo deployment/orders-api --to-revision=3
-```
-
-`revisionHistoryLimit: 5` keeps the last five ReplicaSets. After an emergency `rollout undo`,
-revert the tag in git too, or the next apply rolls forward again.
-
-### Scale
-
-- **orders-api, matching, support-agents** are owned by their HPA. `kubectl scale` gets
-  overwritten, so raise the floor instead: `make scale SVC=matching REPLICAS=6`, then commit
-  the new `minReplicas`.
-- **saga** has no HPA: `kubectl scale deployment/saga --replicas=3`, then update `replicas:`
-  in the prod overlay.
-- HPAs need metrics-server. Without it they show `<unknown>` targets and hold the
-  current count.
-
-### Troubleshooting
-
-**CrashLoopBackOff**: the container starts and exits.
-```bash
-kubectl describe pod <pod>                 # Last State: exit code and reason
-kubectl logs <pod> --previous              # output of the crashed attempt
-```
-Exit code 1 at boot is usually configuration. Check the generated ConfigMap and Secret
-(`kubectl get cm,secret`) and remember that names are hashed. A write error such as
-`EROFS` means the app writes outside `/tmp` while the root filesystem is read-only: mount
-an `emptyDir` at that path rather than turning `readOnlyRootFilesystem` off.
-
-**Probes failing** (`Readiness probe failed` / `Liveness probe failed` in events):
-- `connection refused`: the app listens on another port or on `127.0.0.1`. It must bind
-  `0.0.0.0:$PORT`.
-- Restarted during boot: a slow start (migrations, model warm-up) needs more
-  `startupProbe.failureThreshold` (now 24 x 5 s = 2 min). Liveness only starts once the
-  startup probe has passed.
-- Ready, then not ready under load: readiness is doing what it should and taking the pod
-  out of the Service. Look at latency and dependencies rather than relaxing the probe.
-- Pods are never added to the Service: run `kubectl get endpointslices -l kubernetes.io/service-name=<svc>`.
-
-**OOMKilled** (`Last State: Terminated, Reason: OOMKilled`, exit code 137): the container
-went over `limits.memory` and the kernel killed it.
-```bash
-kubectl top pod -l app.kubernetes.io/name=orders-api   # needs metrics-server
-```
-Node services cap the V8 heap at about 75% of the limit (`NODE_OPTIONS=--max-old-space-size`
-in the ConfigMap), so a heap leak shows up as a JavaScript heap error in the logs instead
-of a silent kill. When you raise the limit in the overlay patch, raise that value with it.
-For the FastAPI services, memory grows with `WEB_CONCURRENCY` (one process per worker).
-
-**Pending**: run `kubectl describe pod`. `Insufficient cpu/memory` means requests are too
-large for the nodes. An unbound PVC on kind means the local-path provisioner is not ready.
-
-**ImagePullBackOff** on kind with the dev overlay: the `:dev` images were never loaded.
-Run `make kind-load`.
-
-**Connection timeouts between services**: a NetworkPolicy is missing for that flow. Every
-allowed edge is listed in `k8s/base/network-policies.yaml`. Add a rule there, then extend
-the port-contract test.
-
-**PSA rejection** (`violates PodSecurity "restricted:latest"`): the pod spec is missing
-`runAsNonRoot`, `seccompProfile`, `capabilities.drop: [ALL]` or
-`allowPrivilegeEscalation: false`. `policy_check.py` catches all four before they reach
-a cluster.
+- an incident checklist;
+- deploys (Argo CD, kubectl, Helm, canary promotion);
+- rollbacks for each delivery path;
+- a scaling playbook;
+- troubleshooting for CrashLoopBackOff, probes, OOMKilled, migrations, ExternalSecrets,
+  Argo CD drift, missing metrics, Pending/ImagePullBackOff, NetworkPolicies and PSA.
 
 ## Decisions and trade-offs
 
-- **Kustomize over Helm.** There are four first-party services with the same shape and two
-  environments. Plain YAML plus patches is reviewable line by line and needs no
-  templating language. Helm becomes worth it when the chart is shared with third parties
-  or the number of environments grows.
-- **HPA-managed Deployments set no `spec.replicas`.** If they did, every `kubectl apply`
-  would reset the count the HPA chose. `policy_check.py` fails the build if a target sets
-  it. Only `saga` has a fixed count.
-- **saga does not autoscale.** The orchestrator owns long-running saga state, and scaling
-  it on CPU would mainly reshuffle Redis stream consumers. Two replicas in prod give
-  availability. Scaling it is a deliberate change.
-- **PDB with `maxUnavailable: 1`, not `minAvailable`.** A single-replica dev Deployment can
-  still be drained, and in prod it allows one pod per service to be disrupted at a time.
-- **Separate startup, readiness and liveness probes.** The startup probe absorbs slow boots,
-  so liveness can stay strict without killing pods that are still starting. All three use
-  `/health` because that is the shared contract with the service repos. A service that
-  wants readiness to depend on its database can expose `/health/ready` and override the
-  path in a patch.
-- **CPU limits are set.** That costs some throttling, but it keeps a noisy pod from starving
-  its neighbours on shared nodes and satisfies kube-linter's defaults. The limits are
-  generous (2 to 10 times the request).
-- **Postgres and Redis in-cluster only for dev.** In prod, backups, point-in-time recovery,
-  failover and major upgrades belong to a managed service (RDS or Cloud SQL, ElastiCache
-  or Memorystore). The prod overlay has no StatefulSets, and its data-egress policy
-  points at the managed subnet instead.
-- **Zero-trust networking.** A default-deny policy covers ingress and egress, plus one
-  policy per edge in the diagram. External HTTPS egress excludes RFC 1918 ranges, so it
-  cannot be used to reach in-cluster services. The cost is that every new dependency
-  needs a policy change, and the consistency tests check that the ports in those
-  policies match the containers.
-- **Restricted Pod Security on the namespace.** It is enforced by the API server, not only
-  linted, and the kind job proves that the whole stack, Postgres and Redis included,
-  runs under it.
-- **Validation layers.** kubeconform checks the API schema, kube-linter checks general good
-  practice, `policy_check.py` checks this platform's own rules and cross-object references,
-  and kind proves the API server accepts it all. Each layer catches something the
-  others miss.
+- **Contracts come from the service repos.** Ports, health paths and env vars were read
+  from each Dockerfile and config loader, and drift is caught by tests. Several things
+  followed from that:
+  - support-agents is on `:8000` with `/healthz`.
+  - orders-api needs `JWT_SECRET` and Prisma migrations.
+  - The FastAPI images ignore `PORT`, so no `PORT` is set for them.
+- **orders-api liveness is TCP, readiness is `/health`.** Its `/health` checks Postgres, and a
+  database outage must take pods out of rotation rather than restart all of them.
+- **support-agents runs as one replica.** LangGraph checkpoints live in SQLite on an
+  `emptyDir`, which survives container restarts but not rescheduling. Scaling out needs the
+  Postgres checkpointer first. The HPA was removed instead of hiding the problem.
+- **Migrations are a Job, not an init container.** One run per release instead of one per
+  pod, with no race between replicas. It is a Sync hook under Argo CD, a revision-named Job
+  in Helm, and a TTL Job with kubectl.
+- **HPA-managed workloads never set `spec.replicas`.** Otherwise every apply or sync resets
+  the HPA's count. `policy_check.py` enforces this, including through a Rollout's `workloadRef`.
+- **Kustomize as the GitOps source, Helm as an equivalent.** Overlays are plain YAML that
+  reviews line by line. The chart exists for Helm consumers, and the parity tests make
+  maintaining both cheap.
+- **ESO over sealed or encrypted secrets.** The cloud secret manager stays the source of truth
+  with audit and rotation, git holds only references, and Reloader closes the
+  "rotated but not restarted" gap.
+- **Prod prune is manual, prod syncs are windowed.** Self-heal keeps the cluster equal to git,
+  but deleting resources and unattended syncs at night are deliberate decisions.
+- **A canary with an automated gate and a human final step.** The analysis catches regressions
+  at 10% of traffic. Promotion past 50% stays a human decision while the metrics are new.
+- **Zero-trust networking.** Default deny, then one policy per edge, including Prometheus
+  scraping and the migration Job. External HTTPS excludes RFC 1918 ranges.
+- **Postgres and Redis in-cluster only for dev.** Backups, PITR and failover belong to managed
+  services. Prod has no StatefulSets.
+- **Layered validation.** Schemas on three Kubernetes versions, kube-linter, trivy, a
+  repo-specific policy engine and a real cluster. Each catches things the others miss.
 
 ## Validation status
 
-This repository was written on a machine without Docker, kubectl or kind. Locally, the
-YAML (yamllint and `yaml.safe_load_all`), the shell scripts (`bash -n`) and the 42-test
-Python suite were run. That suite covers the policy rules, kustomization paths, patch
-targets, image overrides and the port contract across compose, Deployments, ConfigMaps and
-NetworkPolicies, all against the unrendered sources. Kustomize rendering, schema
-validation, kube-linter, `docker compose config` and the kind deployment are validated
-only in CI.
+This repository was written on a machine without Docker, kubectl, kind, helm or kustomize.
+
+**Run locally:**
+
+- yamllint and YAML parsing of every manifest;
+- `bash -n` on the scripts;
+- the 83-test Python suite, covering the policy rules, kustomization paths and patch
+  targets, the service contract across compose, Kustomize, Helm values and the smoke
+  test, Argo CD paths and promotion rules, dashboard and alert queries against the
+  metrics contract, runbook anchors and the canary wiring.
+
+**Validated only in CI:**
+
+- Helm template rendering (`helm lint` / `helm template`);
+- kustomize builds;
+- kubeconform, kube-linter and trivy;
+- `docker compose config`;
+- the kind deployment.
 
 ## What this demonstrates
 
-- Container orchestration with Kubernetes: Deployments, StatefulSets, Services, Ingress,
-  HPA (autoscaling/v2 with scale behaviour), PDB, NetworkPolicy and Pod Security Admission.
-- Environment management with Kustomize: generators with content hashes, strategic-merge
-  and JSON6902 patches, image and replica transformers, and an overlay built on another
-  overlay for CI.
-- Production hardening: non-root, read-only root filesystem, dropped capabilities,
-  seccomp, no service-account tokens, resource budgets, graceful shutdown (`preStop`) and
-  zero-downtime rollouts.
-- Local developer experience with Docker Compose: healthchecks, ordered startup, named
-  volumes and the same hardening as the cluster.
-- Policy as code: a tested Python policy engine alongside kubeconform and kube-linter.
-- CI that deploys to a real ephemeral cluster (kind) and smoke-tests it, with diagnostics
-  on failure.
-- Operational writing: a runbook for deploys, rollbacks, scaling and the usual failure
-  modes (CrashLoopBackOff, probes, OOMKilled).
+- Kubernetes workload design: Deployments, StatefulSets, Jobs, Services, Ingress, HPA, PDB,
+  NetworkPolicy, Pod Security Admission, probes chosen per dependency.
+- Packaging two ways: Kustomize (generators, strategic-merge and JSON6902 patches,
+  components) and a Helm chart with per-environment values, kept equivalent by tests.
+- GitOps with Argo CD: app of apps, AppProject guard rails, sync waves and hooks, sync
+  windows, multi-source Helm apps.
+- Progressive delivery with an Argo Rollouts canary gated on Prometheus analysis.
+- Secrets management with External Secrets Operator, IRSA and Reloader.
+- Observability: kube-prometheus-stack configuration, ServiceMonitor, RED recording rules,
+  alerts with runbook links, and a Grafana dashboard as code.
+- Policy as code and supply-chain hygiene: kubeconform across versions, kube-linter, trivy and
+  a tested Python policy engine.
+- Local developer experience: compose with ordered startup, one-shot migrations and the same
+  hardening as the cluster.
+- Operations: an incident checklist, scaling playbook and failure-mode runbook.
 
 ## License
 
