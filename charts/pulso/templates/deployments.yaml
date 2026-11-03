@@ -41,7 +41,7 @@ spec:
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: {{ $svc.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml $.Values.podSecurityContext | nindent 8 }}
       affinity:
@@ -81,33 +81,30 @@ spec:
             {{- toYaml $svc.resources | nindent 12 }}
           startupProbe:
             httpGet:
-              path: {{ $svc.healthPath }}
+              path: {{ $svc.livenessPath }}
               port: http
             periodSeconds: 5
             failureThreshold: 24
           readinessProbe:
             httpGet:
-              path: {{ $svc.healthPath }}
+              path: {{ $svc.readinessPath }}
               port: http
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
           livenessProbe:
-            {{- if $svc.livenessTcp }}
-            tcpSocket:
-              port: http
-            {{- else }}
             httpGet:
-              path: {{ $svc.healthPath }}
+              path: {{ $svc.livenessPath }}
               port: http
-            {{- end }}
             periodSeconds: 20
             timeoutSeconds: 2
             failureThreshold: 3
+          {{- if $svc.preStopSleepSeconds }}
           lifecycle:
             preStop:
               sleep:
-                seconds: 5
+                seconds: {{ $svc.preStopSleepSeconds }}
+          {{- end }}
           securityContext:
             {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
           volumeMounts:

@@ -20,12 +20,15 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import policy_check  # noqa: E402  (path set up above)
 
 APPS = {
-    # name: (image, container port, health path) as served by each service repository
-    "orders-api": ("ghcr.io/pulso/pulso-orders-api", 3000, "/health"),
+    # name: (image, container port, readiness path) as served by each service repository
+    "orders-api": ("ghcr.io/pulso/pulso-orders-api", 3000, "/health/ready"),
     "matching": ("ghcr.io/pulso/pulso-matching", 8000, "/health"),
     "support-agents": ("ghcr.io/pulso/pulso-support-agents", 8000, "/healthz"),
     "saga": ("ghcr.io/pulso/pulso-saga", 8090, "/health"),
 }
+# Liveness/startup path where it differs from the readiness path (orders-api's readiness
+# includes Postgres and draining; its liveness deliberately does not).
+LIVENESS_PATHS = {"orders-api": "/health/live"}
 # Services whose port comes from $PORT; the two FastAPI images start uvicorn on a fixed :8000.
 READS_PORT_ENV = {"orders-api", "saga"}
 

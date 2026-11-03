@@ -85,14 +85,16 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-pulso}:${POSTGRES_PASSWORD:-pulso-dev-only}@postgres:5432/orders?schema=public
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-not-for-production}
       JWT_ISSUER: pulso-orders-api
+      SHUTDOWN_DRAIN_DELAY_MS: "0"
     ports:
       - "${ORDERS_API_PORT:-3000}:3000"
     depends_on:
       orders-migrate:
         condition: service_completed_successfully
     # Slim runtime images ship without curl/wget, so probe with the runtime itself.
+    # /health/ready includes Postgres, so "healthy" means ready to serve.
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       <<: *healthcheck-timing
 
   matching:
@@ -104,6 +106,8 @@ services:
       WEB_CONCURRENCY: "1"
       PULSO_MAX_RADIUS_KM: "8"
       PULSO_MAX_ETA_MINUTES: "45"
+      PULSO_HUNGARIAN_BUDGET_MS: "300"
+      PULSO_REQUEST_TIMEOUT_MS: "2000"
     ports:
       - "${MATCHING_PORT:-8000}:8000"
     healthcheck:

@@ -7,6 +7,7 @@ import yaml
 
 from tests.support import (
     APPS,
+    LIVENESS_PATHS,
     READS_PORT_ENV,
     K8S,
     ROOT,
@@ -147,16 +148,22 @@ class PortContractTest(unittest.TestCase):
             with self.subTest(service=name):
                 c = container(self.base, name)
                 self.assertEqual(c["ports"][0]["containerPort"], port)
-                for probe in ("startupProbe", "readinessProbe"):
-                    self.assertEqual(c[probe]["httpGet"]["path"], health)
-                liveness = c["livenessProbe"]
-                # orders-api's /health checks Postgres, so its liveness must not depend on it.
-                self.assertEqual(liveness.get("httpGet", {}).get("path"), None if name == "orders-api" else health)
+                live = LIVENESS_PATHS.get(name, health)
+                self.assertEqual(c["readinessProbe"]["httpGet"]["path"], health)
+                self.assertEqual(c["startupProbe"]["httpGet"]["path"], live)
+                self.assertEqual(c["livenessProbe"]["httpGet"]["path"], live)
                 literals = generator_literals(BASE, f"{name}-config")
                 if name in READS_PORT_ENV:
                     self.assertEqual(literals["PORT"], str(port))
                 else:
                     self.assertNotIn("PORT", literals, "this image ignores PORT; setting it would mislead")
+
+    def test_orders_api_shutdown_fits_the_grace_period(self):
+        spec = by_kind_name(self.base)[("Deployment", "orders-api")]["spec"]["template"]["spec"]
+        literals = generator_literals(BASE, "orders-api-config")
+        self.assertLess(int(literals["SHUTDOWN_TIMEOUT_MS"]) / 1000, spec["terminationGracePeriodSeconds"])
+        self.assertLess(int(literals["SHUTDOWN_DRAIN_DELAY_MS"]), int(literals["SHUTDOWN_TIMEOUT_MS"]))
+        self.assertNotIn("lifecycle", spec["containers"][0], "the app drains itself; a preStop would only add delay")
 
     def test_compose_ports_and_healthchecks(self):
         for name, (_, port, health) in APPS.items():

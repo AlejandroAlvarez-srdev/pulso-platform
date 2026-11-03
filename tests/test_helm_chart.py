@@ -7,7 +7,7 @@ pin the values files to the manifests so the two deployment paths cannot drift a
 import copy
 import unittest
 
-from tests.support import APPS, K8S, ROOT, generator_literals, kustomization, load_kustomization, read_yaml
+from tests.support import APPS, K8S, LIVENESS_PATHS, ROOT, generator_literals, kustomization, load_kustomization, read_yaml
 
 CHART = ROOT / "charts" / "pulso"
 BASE = K8S / "base"
@@ -55,13 +55,17 @@ class HelmChartParityTest(unittest.TestCase):
             with self.subTest(service=name):
                 self.assertEqual(f"{values()['image']['registry']}/{services[name]['image']}", image)
                 self.assertEqual(services[name]["port"], port)
-                self.assertEqual(services[name]["healthPath"], health)
+                self.assertEqual(services[name]["readinessPath"], health)
+                self.assertEqual(services[name]["livenessPath"], LIVENESS_PATHS.get(name, health))
 
-    def test_liveness_kind_matches_base(self):
+    def test_shutdown_settings_match_base(self):
         docs = load_kustomization(BASE)
         for name, svc in values()["services"].items():
-            liveness = deployment(docs, name)["spec"]["template"]["spec"]["containers"][0]["livenessProbe"]
-            self.assertEqual(svc["livenessTcp"], "tcpSocket" in liveness, name)
+            with self.subTest(service=name):
+                spec = deployment(docs, name)["spec"]["template"]["spec"]
+                self.assertEqual(svc["terminationGracePeriodSeconds"], spec["terminationGracePeriodSeconds"])
+                pre_stop = spec["containers"][0].get("lifecycle", {}).get("preStop", {}).get("sleep", {}).get("seconds", 0)
+                self.assertEqual(svc["preStopSleepSeconds"], pre_stop)
 
     def test_resources_match_base_and_prod(self):
         base_docs = load_kustomization(BASE)

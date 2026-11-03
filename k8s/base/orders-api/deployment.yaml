@@ -25,6 +25,10 @@ spec:
     spec:
       serviceAccountName: orders-api
       automountServiceAccountToken: false
+      # orders-api drains itself on SIGTERM: readiness turns 503, it keeps serving for
+      # SHUTDOWN_DRAIN_DELAY_MS (5 s) while endpoints are removed, then closes the server and
+      # the Prisma pool, and forces an exit at SHUTDOWN_TIMEOUT_MS (25 s). The grace period
+      # leaves 5 s on top, so Kubernetes never SIGKILLs a clean shutdown; no preStop needed.
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -66,30 +70,27 @@ spec:
           # never get killed by the liveness probe.
           startupProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: http
             periodSeconds: 5
             failureThreshold: 24
+          # /health/ready checks Postgres and returns 503 while draining.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: http
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
-          # /health also checks Postgres, so it gates readiness only. Liveness is a TCP check:
-          # a database outage must take pods out of the Service, not restart all of them.
+          # /health/live ignores dependencies: a database outage takes pods out of the Service
+          # (readiness) instead of restarting all of them.
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health/live
               port: http
             periodSeconds: 20
             timeoutSeconds: 2
             failureThreshold: 3
-          lifecycle:
-            # Give ingress-nginx and kube-proxy time to drop the endpoint before SIGTERM.
-            preStop:
-              sleep:
-                seconds: 5
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

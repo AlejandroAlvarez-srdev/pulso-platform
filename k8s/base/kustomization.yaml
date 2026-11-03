@@ -44,6 +44,11 @@ configMapGenerator:
       - PERSISTENCE=prisma
       - JWT_ISSUER=pulso-orders-api
       - JWT_TTL_SECONDS=3600
+      # Graceful shutdown; keep SHUTDOWN_TIMEOUT_MS below terminationGracePeriodSeconds.
+      - SHUTDOWN_DRAIN_DELAY_MS=5000
+      - SHUTDOWN_TIMEOUT_MS=25000
+      # Behind ingress-nginx: take the client IP from X-Forwarded-For for rate limiting.
+      - TRUST_PROXY=true
       # ~75% of the memory limit; keeps V8 below the cgroup limit instead of getting OOMKilled.
       - NODE_OPTIONS=--max-old-space-size=288
   - name: matching-config
@@ -52,6 +57,9 @@ configMapGenerator:
       - WEB_CONCURRENCY=2
       - PULSO_MAX_RADIUS_KM=8
       - PULSO_MAX_ETA_MINUTES=45
+      # Hungarian assignment falls back to greedy past the budget; requests fail past the timeout.
+      - PULSO_HUNGARIAN_BUDGET_MS=300
+      - PULSO_REQUEST_TIMEOUT_MS=2000
   - name: support-agents-config
     literals:
       # "scripted" is the offline deterministic model; prod switches to a real provider.

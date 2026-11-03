@@ -35,9 +35,12 @@ services:
     tag: ""
     component: api
     port: 3000
-    healthPath: /health
-    # /health also checks Postgres; liveness must not, so it is a TCP check.
-    livenessTcp: true
+    # Readiness includes Postgres and turns 503 while draining; liveness ignores dependencies.
+    readinessPath: /health/ready
+    livenessPath: /health/live
+    # The app drains itself on SIGTERM (SHUTDOWN_* below), so no preStop sleep.
+    terminationGracePeriodSeconds: 30
+    preStopSleepSeconds: 0
     ingressPath: /api/orders
     replicas: 1
     autoscaling:
@@ -54,6 +57,9 @@ services:
       PERSISTENCE: prisma
       JWT_ISSUER: pulso-orders-api
       JWT_TTL_SECONDS: "3600"
+      SHUTDOWN_DRAIN_DELAY_MS: "5000"
+      SHUTDOWN_TIMEOUT_MS: "25000"
+      TRUST_PROXY: "true"
       NODE_OPTIONS: --max-old-space-size=288
     secretKeys: [DATABASE_URL, JWT_SECRET]
     dataVolume: false
@@ -71,8 +77,11 @@ services:
     tag: ""
     component: api
     port: 8000
-    healthPath: /health
-    livenessTcp: false
+    readinessPath: /health
+    livenessPath: /health
+    terminationGracePeriodSeconds: 30
+    # Time for endpoint removal to reach ingress-nginx and kube-proxy before SIGTERM.
+    preStopSleepSeconds: 5
     ingressPath: ""
     replicas: 1
     autoscaling:
@@ -87,6 +96,8 @@ services:
       WEB_CONCURRENCY: "2"
       PULSO_MAX_RADIUS_KM: "8"
       PULSO_MAX_ETA_MINUTES: "45"
+      PULSO_HUNGARIAN_BUDGET_MS: "300"
+      PULSO_REQUEST_TIMEOUT_MS: "2000"
     secretKeys: []
     dataVolume: false
     networkPolicy:
@@ -103,8 +114,11 @@ services:
     tag: ""
     component: api
     port: 8000
-    healthPath: /healthz
-    livenessTcp: false
+    readinessPath: /healthz
+    livenessPath: /healthz
+    terminationGracePeriodSeconds: 30
+    # Time for endpoint removal to reach ingress-nginx and kube-proxy before SIGTERM.
+    preStopSleepSeconds: 5
     ingressPath: /api/support
     # SQLite checkpoints are per pod: keep one replica until they move to Postgres.
     replicas: 1
@@ -138,8 +152,11 @@ services:
     tag: ""
     component: worker
     port: 8090
-    healthPath: /health
-    livenessTcp: false
+    readinessPath: /health
+    livenessPath: /health
+    terminationGracePeriodSeconds: 30
+    # Time for endpoint removal to reach ingress-nginx and kube-proxy before SIGTERM.
+    preStopSleepSeconds: 5
     ingressPath: ""
     replicas: 1
     autoscaling:

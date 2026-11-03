@@ -7,8 +7,8 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-pulso}"
 INGRESS_HOST="${INGRESS_HOST:-}"
-# service:local-port:health-path (support-agents is the only one serving /healthz)
-SERVICES=("orders-api:13000:/health" "matching:18000:/health" "support-agents:18080:/healthz" "saga:18090:/health")
+# service:local-port:readiness-path, as served by each service repository
+SERVICES=("orders-api:13000:/health/ready" "matching:18000:/health" "support-agents:18080:/healthz" "saga:18090:/health")
 
 pids=()
 cleanup() {
@@ -42,7 +42,7 @@ for entry in "${SERVICES[@]}"; do
 done
 
 if [[ -n "${INGRESS_HOST}" ]]; then
-  for route in /api/orders/health /api/support/healthz; do
+  for route in /api/orders/health/ready /api/support/healthz; do
     if wait_for_200 "http://127.0.0.1${route}" -H "Host: ${INGRESS_HOST}"; then
       echo "ok    ingress ${INGRESS_HOST}${route}"
     else
