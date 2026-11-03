@@ -93,6 +93,17 @@ class AlertRulesTest(unittest.TestCase):
                     used = metric_names(rule["expr"]) | set(re.findall(r"pulso:[a-z_:0-9]+", rule["expr"]))
                     self.assertLessEqual(used, CONTRACT | PLATFORM | recorded)
 
+    def test_runbook_links_resolve(self):
+        runbook = (ROOT / "docs" / "RUNBOOK.md").read_text()
+        anchors = {re.sub(r"[^a-z0-9 -]", "", h.lower()).strip().replace(" ", "-") for h in re.findall(r"^#+ (.+)$", runbook, re.M)}
+        for group in rules():
+            for rule in group["rules"]:
+                url = rule.get("annotations", {}).get("runbook_url")
+                if url:
+                    with self.subTest(alert=rule["alert"]):
+                        self.assertTrue(url.split("#")[0].endswith("docs/RUNBOOK.md"))
+                        self.assertIn(url.split("#")[1], anchors)
+
     def test_alerts_have_severity_routed_by_alertmanager(self):
         routed = {"page", "ticket"}
         for group in rules():
