@@ -88,7 +88,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kubernetes: ["1.29.0", "1.30.0", "1.31.0"]
+        kubernetes: ["1.30.0", "1.31.0", "1.32.0"]
     steps:
       - uses: actions/checkout@v4
 
@@ -182,6 +182,9 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
         with:
+          version: v0.24.0
+          # preStop.sleep (PodLifecycleSleepAction) is on by default from Kubernetes 1.30.
+          node_image: kindest/node:v1.31.0
           cluster_name: pulso
           config: k8s/kind/cluster.yaml
 

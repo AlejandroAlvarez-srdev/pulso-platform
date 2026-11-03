@@ -297,7 +297,7 @@ crash-loop, OOM and HPA alerts, which come from kube-state-metrics.
 |---|---|
 | Lint and tests | yamllint, shellcheck, the Python test suite, `docker compose config` |
 | Render | `helm lint` (default, dev and prod values), `kustomize build` of dev, prod, kind-smoke, observability and prod-canary, `helm template` with dev and prod values; uploads `rendered/` |
-| kubeconform (matrix) | strict validation against **Kubernetes 1.29, 1.30 and 1.31** schemas, plus the CRD catalog for ExternalSecret, ServiceMonitor, PrometheusRule, Rollout, AnalysisTemplate and Argo CD Application/AppProject |
+| kubeconform (matrix) | strict validation against **Kubernetes 1.30, 1.31 and 1.32** schemas (1.30 is the minimum: the probes use `preStop.sleep`), plus the CRD catalog for ExternalSecret, ServiceMonitor, PrometheusRule, Rollout, AnalysisTemplate and Argo CD Application/AppProject |
 | kube-linter + policy | kube-linter on the Kustomize and Helm renders; `policy_check.py` also on prod-canary |
 | trivy config | misconfiguration scan of the rendered manifests and the chart; HIGH or CRITICAL fails |
 | Deploy to kind | kind + ingress-nginx, applies `k8s/ci/kind-smoke`, waits for StatefulSets, the migration Job and Deployments, runs `make smoke`, dumps diagnostics on failure |
