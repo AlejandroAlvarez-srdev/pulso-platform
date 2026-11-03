@@ -1,4 +1,9 @@
-# pulso-platform
+<p align="center"><img src="assets/banner.svg" alt="pulso-platform" width="100%"></p>
+
+<p align="center"><img src="https://img.shields.io/badge/Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white" alt="Kubernetes"> <img src="https://img.shields.io/badge/Helm-0F1689?style=for-the-badge&logo=helm&logoColor=white" alt="Helm"> <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker"> <img src="https://img.shields.io/badge/Argo_CD-EF7B4D?style=for-the-badge&logo=argo&logoColor=white" alt="Argo CD"> <img src="https://img.shields.io/badge/Prometheus-E6522C?style=for-the-badge&logo=prometheus&logoColor=white" alt="Prometheus"> <img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white" alt="GitHub Actions"> <img src="https://img.shields.io/badge/23_commits-6a178c?style=for-the-badge" alt="23 commits"></p>
+
+<h1 align="center">pulso-platform</h1>
+<!-- /header -->
 
 Deployment platform for **Pulso**, an on-demand micro-task marketplace: merchants post
 orders (pick up and deliver, buy something in a store), independent "pulsers" accept and
@@ -29,6 +34,17 @@ orders-api and matching also serve Prometheus metrics on `/metrics`. support-age
 saga do not yet. The ports, health paths, metrics endpoints and environment variables above
 were checked against each service repository. `tests/support.py` pins them, and every manifest, the chart, compose
 and the smoke test are tested against that table.
+
+## At a glance
+
+<table>
+  <tr>
+    <td align="center" width="25%"><b>Kustomize overlays + Helm chart</b><br>Packaging</td>
+    <td align="center" width="25%"><b>Argo CD + Rollouts canary</b><br>Delivery</td>
+    <td align="center" width="25%"><b>Restricted PSS, NetworkPolicies</b><br>Security</td>
+    <td align="center" width="25%"><b>kubeconform × 3 versions, trivy, kind</b><br>CI</td>
+  </tr>
+</table>
 
 ## Architecture
 
