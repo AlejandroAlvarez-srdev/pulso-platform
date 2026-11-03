@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Validate the rendered overlays: Kubernetes schemas, kube-linter, platform policy.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+K8S_VERSION="${K8S_VERSION:-1.30.0}"
+PYTHON="${PYTHON:-python3}"
+
+for tool in kubeconform kube-linter; do
+  command -v "${tool}" >/dev/null 2>&1 || { echo "validate: ${tool} is not installed" >&2; exit 1; }
+done
+
+echo "== kubeconform (Kubernetes ${K8S_VERSION}, strict)"
+kubeconform -strict -summary -kubernetes-version "${K8S_VERSION}" rendered/*/manifests.yaml
+
+for env in dev prod; do
+  echo "== kube-linter (${env})"
+  kube-linter lint "rendered/${env}"
+  echo "== platform policy (${env})"
+  "${PYTHON}" scripts/policy_check.py "rendered/${env}/manifests.yaml"
+done
