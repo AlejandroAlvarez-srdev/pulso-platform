@@ -1,0 +1,159 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KUSTOMIZE_VERSION: "5.4.3"
+  KUBECONFORM_VERSION: "0.6.7"
+  KUBE_LINTER_VERSION: "0.7.1"
+  K8S_SCHEMA_VERSION: "1.30.0"
+  INGRESS_NGINX_REF: "controller-v1.11.5"
+
+jobs:
+  lint-test:
+    name: Lint and tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install Python tooling
+        run: pip install -r requirements-dev.txt
+
+      - name: yamllint
+        run: yamllint -s .
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Policy unit tests and consistency tests
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: docker compose config
+        run: |
+          # Build contexts point at the sibling service repositories; empty
+          # stand-ins are enough for compose to resolve and validate the file.
+          for svc in orders-api matching support-agents saga; do mkdir -p "../pulso-${svc}"; done
+          docker compose --env-file .env.example config --quiet
+
+  manifests:
+    name: Render and validate manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install Python tooling
+        run: pip install -r requirements-dev.txt
+
+      - name: Install kustomize, kubeconform and kube-linter
+        run: |
+          mkdir -p "$HOME/bin" /tmp/tools
+          fetch() { mkdir -p "/tmp/tools/$1" && curl -fsSL "$2" | tar -xz -C "/tmp/tools/$1"; }
+          fetch kustomize "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          fetch kubeconform "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          fetch kube-linter "https://github.com/stackrox/kube-linter/releases/download/v${KUBE_LINTER_VERSION}/kube-linter-linux.tar.gz"
+          for tool in kustomize kubeconform kube-linter; do
+            install -m 0755 "$(find "/tmp/tools/${tool}" -type f -name "${tool}" | head -n1)" "$HOME/bin/${tool}"
+          done
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        run: |
+          kustomize version
+          kubeconform -v
+          kube-linter version
+
+      - name: Render overlays (dev, prod, kind-smoke)
+        run: |
+          # Prod secrets are injected by the release pipeline; CI renders with the templates.
+          make prod-secrets-placeholder
+          make render
+
+      - name: kubeconform + kube-linter + platform policy
+        run: ./scripts/validate.sh
+        env:
+          K8S_VERSION: ${{ env.K8S_SCHEMA_VERSION }}
+
+      - name: Upload rendered manifests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+          if-no-files-found: ignore
+
+  kind-smoke:
+    # Real cluster, placeholder images: see k8s/ci/kind-smoke/kustomization.yaml.
+    name: Deploy to kind (placeholder images)
+    needs: [lint-test, manifests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kustomize
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$HOME/bin" kustomize
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: pulso
+          config: k8s/kind/cluster.yaml
+
+      - name: Install ingress-nginx
+        run: |
+          kubectl apply -f "https://raw.githubusercontent.com/kubernetes/ingress-nginx/${INGRESS_NGINX_REF}/deploy/static/provider/kind/deploy.yaml"
+          kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=180s
+
+      - name: Apply the kind-smoke overlay
+        run: |
+          kustomize build k8s/ci/kind-smoke > /tmp/pulso.yaml
+          # The ingress-nginx admission webhook can lag a few seconds behind the controller.
+          for attempt in 1 2 3 4 5 6; do
+            if kubectl apply -f /tmp/pulso.yaml; then exit 0; fi
+            echo "apply failed (attempt ${attempt}), retrying in 10s"
+            sleep 10
+          done
+          exit 1
+
+      - name: Wait for StatefulSets and Deployments
+        run: ./scripts/wait-ready.sh
+        env:
+          TIMEOUT: 300s
+
+      - name: Smoke test (port-forward + ingress)
+        run: make smoke
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl -n pulso get all,pvc,networkpolicy,ingress,hpa,pdb -o wide || true
+          kubectl -n pulso describe pods || true
+          kubectl -n pulso get events --sort-by=.lastTimestamp || true
+          kubectl -n pulso logs -l app.kubernetes.io/part-of=pulso --all-containers --prefix --tail=50 || true
+          kubectl -n ingress-nginx logs deployment/ingress-nginx-controller --tail=50 || true

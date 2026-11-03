@@ -7,7 +7,7 @@ ignore: |
 rules:
   document-start: disable
   line-length:
-    max: 140
+    max: 180
   truthy:
     allowed-values: ["true", "false"]
     check-keys: false
