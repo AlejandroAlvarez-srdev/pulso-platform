@@ -17,7 +17,7 @@ CRD_CATALOG='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Gro
 echo "== kubeconform (Kubernetes ${K8S_VERSION}, strict)"
 kubeconform -strict -summary -kubernetes-version "${K8S_VERSION}" \
   -schema-location default -schema-location "${CRD_CATALOG}" \
-  rendered/*/manifests.yaml
+  rendered/*/manifests.yaml argocd/
 
 for env in dev prod helm-dev helm-prod; do
   echo "== kube-linter (${env})"

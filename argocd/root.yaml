@@ -1,0 +1,22 @@
+# App of apps. Bootstrap once with `kubectl apply -n argocd -f argocd/root.yaml`; from then
+# on every Application under argocd/apps/ is managed from git, including this repo's own.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pulso-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/pulso/pulso-platform.git
+    targetRevision: main
+    path: argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

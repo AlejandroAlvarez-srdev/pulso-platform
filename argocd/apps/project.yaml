@@ -1,0 +1,40 @@
+# Guard rails for every Pulso Application: which repos, clusters, namespaces and
+# cluster-scoped kinds they may touch, and when prod may sync on its own.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: pulso
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: Pulso services, their monitoring objects and the monitoring stack
+  sourceRepos:
+    - https://github.com/pulso/pulso-platform.git
+    - https://prometheus-community.github.io/helm-charts
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: pulso
+    - name: prod
+      namespace: pulso
+    - name: prod
+      namespace: monitoring
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    # kube-prometheus-stack ships CRDs, webhooks and RBAC.
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: admissionregistration.k8s.io
+      kind: "*"
+    - group: rbac.authorization.k8s.io
+      kind: "*"
+  syncWindows:
+    # Automated prod syncs only in working hours (Mexico City); manual syncs stay possible
+    # for incidents.
+    - kind: allow
+      schedule: "0 15 * * 1-5"
+      duration: 8h
+      applications: ["pulso-prod"]
+      timeZone: America/Mexico_City
+      manualSync: true

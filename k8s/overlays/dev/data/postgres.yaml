@@ -12,6 +12,8 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     app.kubernetes.io/name: postgres
 spec:
@@ -28,6 +30,9 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
+  annotations:
+    # Argo CD: up before the migration hook (wave -1) and the services (0).
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/component: database

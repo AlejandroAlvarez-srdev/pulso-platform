@@ -1,4 +1,4 @@
-# Applies Prisma migrations and the idempotent demo seed before orders-api serves traffic.
+# Applies Prisma migrations and the idempotent demo seed before orders-api rolls out.
 # The runtime image has no Prisma CLI, so this runs the repository's "build" stage, published
 # as pulso-orders-api-migrate. The TTL removes the finished Job, so every deploy re-runs it
 # (migrate deploy is a no-op when the schema is current) without hitting the immutable
@@ -7,6 +7,13 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: orders-api-migrate
+  annotations:
+    # Argo CD runs it as a Sync hook in wave -1: after Secrets and data stores (-2), before
+    # the Deployments (0). Hooks are not tracked as app resources, so the TTL deleting the
+    # Job does not show up as drift. Plain kubectl ignores these annotations.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
   labels:
     app.kubernetes.io/name: orders-api-migrate
     app.kubernetes.io/component: migration

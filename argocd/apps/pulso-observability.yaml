@@ -1,0 +1,21 @@
+# ServiceMonitor, alert rules and dashboard for the prod Pulso namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pulso-observability
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: pulso
+  source:
+    repoURL: https://github.com/pulso/pulso-platform.git
+    targetRevision: prod
+    path: k8s/observability
+  destination:
+    name: prod
+    namespace: pulso
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

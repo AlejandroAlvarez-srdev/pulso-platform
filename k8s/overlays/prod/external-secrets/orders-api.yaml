@@ -3,6 +3,9 @@ apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: orders-api-secrets
+  annotations:
+    # Argo CD waits for the ExternalSecret to be healthy (Secret written) before wave -1.
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   refreshInterval: 1h
   secretStoreRef:

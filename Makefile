@@ -95,6 +95,12 @@ deploy-smoke: ## Apply the CI overlay (dev + public placeholder images) and wait
 smoke: ## port-forward + curl /health on every service, then through the ingress
 	INGRESS_HOST=$(INGRESS_HOST) ./scripts/smoke.sh
 
+# ---------------------------------------------------------------- gitops
+
+.PHONY: argocd-bootstrap
+argocd-bootstrap: ## Register the app-of-apps with an existing Argo CD (namespace argocd)
+	kubectl apply -n argocd -f argocd/root.yaml
+
 # ---------------------------------------------------------------- operations
 
 .PHONY: status

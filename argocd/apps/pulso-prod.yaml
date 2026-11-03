@@ -1,0 +1,39 @@
+# Prod tracks the "prod" branch, which only moves through reviewed promotion PRs
+# (image tag bumps in k8s/overlays/prod). Self-heal reverts manual drift; pruning is
+# not automated, so removing a resource from git needs an explicit sync with prune.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pulso-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: pulso-deploys
+    notifications.argoproj.io/subscribe.on-health-degraded.slack: pulso-deploys
+spec:
+  project: pulso
+  source:
+    repoURL: https://github.com/pulso/pulso-platform.git
+    targetRevision: prod
+    path: k8s/overlays/prod
+  destination:
+    name: prod
+    namespace: pulso
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+  # HPAs own the API replica counts (spec.replicas is never set in git), so there is no
+  # replicas drift to ignore; ESO writes the Secrets, which Argo CD does not track.
+  revisionHistoryLimit: 10

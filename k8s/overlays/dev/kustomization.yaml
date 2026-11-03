@@ -51,6 +51,11 @@ configMapGenerator:
     files:
       - initdb.sql=data/postgres-init.sql
 
+# Argo CD: generated ConfigMaps/Secrets exist before the migration hook (wave -1).
+generatorOptions:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+
 # DUMMY values for local clusters only. Generated here rather than in base so that prod
 # can provide the same Secret names through External Secrets Operator.
 secretGenerator:

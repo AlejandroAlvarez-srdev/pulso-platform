@@ -1,0 +1,31 @@
+# Dev follows main continuously: automated sync with prune and self-heal.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pulso-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: pulso
+  source:
+    repoURL: https://github.com/pulso/pulso-platform.git
+    targetRevision: main
+    path: k8s/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pulso
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # The namespace (with its Pod Security labels) is part of the manifests.
+      - CreateNamespace=false
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

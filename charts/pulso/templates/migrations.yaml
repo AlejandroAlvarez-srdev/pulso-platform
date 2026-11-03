@@ -8,6 +8,11 @@ kind: Job
 metadata:
   name: orders-api-migrate-{{ .Release.Revision }}
   namespace: {{ $.Release.Namespace }}
+  annotations:
+    # When the chart is synced by Argo CD (which renders with revision 1), run it as a hook.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
   labels:
     {{- include "pulso.labels" (list $ "orders-api-migrate") | nindent 4 }}
     app.kubernetes.io/component: migration
