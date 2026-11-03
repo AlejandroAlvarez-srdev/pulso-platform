@@ -44,12 +44,6 @@ patches:
     target:
       kind: Ingress
       name: pulso-public
-  # Same host, no TLS block or issuer of its own: ingress-nginx serves the host's
-  # certificate from pulso-public, and cert-manager sees a single owner for the Secret.
-  - path: patches/ingress-blocked-paths.yaml
-    target:
-      kind: Ingress
-      name: pulso-public-blocked-paths
   - path: patches/postgres-egress.yaml
     target:
       kind: NetworkPolicy

@@ -27,7 +27,12 @@ spec:
         paths:
           {{- range $name, $svc := .Values.services }}
           {{- if and $svc.enabled $svc.ingressPath }}
+          {{- /* Services with metrics: true keep /metrics off the public route (default backend, 404). */}}
+          {{- if $svc.metrics }}
+          - path: {{ printf "%s(/|$)(?!metrics(?:/|$))(.*)" $svc.ingressPath | quote }}
+          {{- else }}
           - path: {{ printf "%s(/|$)(.*)" $svc.ingressPath | quote }}
+          {{- end }}
             pathType: ImplementationSpecific
             backend:
               service:
@@ -36,41 +41,4 @@ spec:
                   name: http
           {{- end }}
           {{- end }}
-{{- $blocked := list }}
-{{- range $name, $svc := .Values.services }}
-{{- if and $svc.enabled $svc.metrics $svc.ingressPath }}
-{{- $blocked = append $blocked (dict "path" (printf "%s/metrics" $svc.ingressPath) "service" $name) }}
-{{- end }}
-{{- end }}
-{{- if $blocked }}
----
-# /metrics of public services must not be reachable through the rewrite: claim those paths
-# and allow only 127.0.0.1, so ingress-nginx answers 403. Prometheus scrapes pods directly.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: pulso-public-blocked-paths
-  namespace: {{ $.Release.Namespace }}
-  labels:
-    {{- include "pulso.labels" (list $ "pulso-public-blocked-paths") | nindent 4 }}
-  annotations:
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    nginx.ingress.kubernetes.io/whitelist-source-range: 127.0.0.1/32
-spec:
-  # No TLS block: ingress-nginx serves the host's certificate from pulso-public.
-  ingressClassName: {{ .Values.ingress.className }}
-  rules:
-    - host: {{ .Values.ingress.host | quote }}
-      http:
-        paths:
-          {{- range $blocked }}
-          - path: {{ .path | quote }}
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: {{ .service }}
-                port:
-                  name: http
-          {{- end }}
-{{- end }}
 {{- end }}

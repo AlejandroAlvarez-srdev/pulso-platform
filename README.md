@@ -268,10 +268,13 @@ the same histogram.
   by route, status breakdown and restarts, filterable by service.
 
 A NetworkPolicy (`allow-prometheus-scrape`) lets Prometheus in the `monitoring` namespace
-reach the orders-api and matching ports. A second Ingress, `pulso-public-blocked-paths`,
-claims `/api/orders/metrics` on the public host and allows only `127.0.0.1`, so the
-rewrite never exposes orders-api's metrics to the internet. The smoke test checks that
-it returns 403.
+reach the orders-api and matching ports. The public route excludes `/metrics` with a
+negative lookahead, `/api/orders(/|$)(?!metrics(?:/|$))(.*)`, and keeps capture group 2
+for the rewrite. As a result `/api/orders/metrics` falls through to ingress-nginx's
+default backend (404), and orders-api's metrics are never exposed to the internet. The
+smoke test checks the 404. A separate path-claiming Ingress was tried and dropped: with
+`use-regex`, ingress-nginx orders locations by path length, so the longer main route won,
+and that Ingress's source-range annotation leaked onto the host's default location.
 
 **Metrics contract.** The two exporters name things differently:
 

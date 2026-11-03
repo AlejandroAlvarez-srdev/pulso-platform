@@ -91,15 +91,26 @@ class ScrapeConfigTest(unittest.TestCase):
         self.assertEqual(ports, {APPS[name][1] for name in METRICS})
         self.assertEqual(set(policy["spec"]["podSelector"]["matchExpressions"][0]["values"]), set(METRICS))
 
-    def test_public_metrics_paths_are_blocked(self):
+    def test_public_routes_exclude_metrics(self):
         ingresses = {d["metadata"]["name"]: d for d in load_kustomization(K8S / "base") if d["kind"] == "Ingress"}
-        public = ingresses["pulso-public"]["spec"]["rules"][0]["http"]["paths"]
-        exposed = {p["backend"]["service"]["name"]: p["path"].split("(")[0] for p in public}
-        blocked = ingresses["pulso-public-blocked-paths"]
-        self.assertEqual(blocked["metadata"]["annotations"]["nginx.ingress.kubernetes.io/whitelist-source-range"], "127.0.0.1/32")
-        paths = {p["path"] for p in blocked["spec"]["rules"][0]["http"]["paths"]}
-        self.assertEqual(paths, {f"{exposed[name]}/metrics" for name in METRICS if name in exposed})
-        self.assertEqual(blocked["spec"]["rules"][0]["host"], ingresses["pulso-public"]["spec"]["rules"][0]["host"])
+        self.assertEqual(set(ingresses), {"pulso-public"}, "a second Ingress on the host leaks its annotations")
+        paths = {p["backend"]["service"]["name"]: p["path"] for p in ingresses["pulso-public"]["spec"]["rules"][0]["http"]["paths"]}
+        for name, path in paths.items():
+            with self.subTest(service=name):
+                prefix = path.split("(")[0]
+                route = re.compile(path)
+                self.assertEqual(route.fullmatch(f"{prefix}/health").group(2), "health")
+                self.assertEqual(route.fullmatch(f"{prefix}").group(2), "")
+                if name in METRICS:
+                    self.assertIn("(?!metrics(?:/|$))", path)
+                    for blocked in (f"{prefix}/metrics", f"{prefix}/metrics/", f"{prefix}/metrics/x"):
+                        self.assertIsNone(route.fullmatch(blocked), blocked)
+                    self.assertEqual(route.fullmatch(f"{prefix}/metricsfoo").group(2), "metricsfoo")
+
+    def test_chart_route_uses_the_same_lookahead(self):
+        template = (ROOT / "charts" / "pulso" / "templates" / "ingress.yaml").read_text()
+        self.assertIn('printf "%s(/|$)(?!metrics(?:/|$))(.*)"', template)
+        self.assertNotIn("blocked", template)
 
     def test_stack_selects_monitors_from_all_namespaces(self):
         values = read_yaml(ROOT / "observability" / "kube-prometheus-stack" / "values.yaml")[0]

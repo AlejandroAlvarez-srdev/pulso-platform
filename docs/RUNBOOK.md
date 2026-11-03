@@ -230,7 +230,11 @@ These are the only scraped services; support-agents and saga have no exporter ye
 2. **Connection refused or timeout:** check that the pod is running and that
    `allow-prometheus-scrape` still allows the `monitoring` namespace and the port.
 3. **404:** the service no longer serves `/metrics`. Fix the ServiceMonitor or the service.
-4. **Panels empty but the target is up:** the exporter renamed its histogram or status
+4. **`/api/orders/metrics` answers anything but 404 from outside:** the public route lost
+   its `(?!metrics(?:/|$))` lookahead (base `ingress.yaml` or the chart). Do not fix it
+   with a second Ingress on the same host: ingress-nginx sorts regex locations by length,
+   and annotations such as source ranges leak onto the host's default location.
+5. **Panels empty but the target is up:** the exporter renamed its histogram or status
    label. Update the `metricRelabelings` in `k8s/observability/service-monitors.yaml`.
 
 ### 502/503 during deploys

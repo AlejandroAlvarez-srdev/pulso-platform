@@ -42,7 +42,7 @@ services:
     terminationGracePeriodSeconds: 30
     preStopSleepSeconds: 0
     ingressPath: /api/orders
-    # Serves Prometheus metrics on /metrics (scrape policy, and blocked on the public Ingress).
+    # Serves Prometheus metrics on /metrics (scrape policy; excluded from the public route).
     metrics: true
     replicas: 1
     autoscaling:
