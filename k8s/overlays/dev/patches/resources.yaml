@@ -1,0 +1,6 @@
+# Applied to every Deployment: small requests so the whole stack fits in a kind node.
+- op: replace
+  path: /spec/template/spec/containers/0/resources/requests
+  value:
+    cpu: 25m
+    memory: 96Mi

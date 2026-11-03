@@ -1,0 +1,7 @@
+# Applied to every HorizontalPodAutoscaler: one replica is enough on a laptop cluster.
+- op: replace
+  path: /spec/minReplicas
+  value: 1
+- op: replace
+  path: /spec/maxReplicas
+  value: 2

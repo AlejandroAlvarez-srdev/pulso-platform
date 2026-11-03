@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Repeated here so generator merges resolve against the base objects' namespace.
+namespace: pulso
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: pulso
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - ../../base
+  - data/postgres.yaml
+  - data/redis.yaml
+  - data/network-policies.yaml
+
+images:
+  - name: ghcr.io/pulso/pulso-orders-api
+    newTag: dev
+  - name: ghcr.io/pulso/pulso-matching
+    newTag: dev
+  - name: ghcr.io/pulso/pulso-support-agents
+    newTag: dev
+  - name: ghcr.io/pulso/pulso-saga
+    newTag: dev
+
+patches:
+  - path: patches/hpa.yaml
+    target:
+      kind: HorizontalPodAutoscaler
+  - path: patches/resources.yaml
+    target:
+      kind: Deployment
+
+configMapGenerator:
+  - name: orders-api-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=debug
+  - name: matching-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=debug
+      - WEB_CONCURRENCY=1
+  - name: support-agents-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=debug
+      - WEB_CONCURRENCY=1
+  - name: saga-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=debug
+  - name: postgres-initdb
+    files:
+      - initdb.sql=data/postgres-init.sql
+
+secretGenerator:
+  - name: postgres-credentials
+    literals:
+      - POSTGRES_USER=pulso
+      - POSTGRES_PASSWORD=pulso-dev-only
