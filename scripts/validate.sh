@@ -19,7 +19,7 @@ kubeconform -strict -summary -kubernetes-version "${K8S_VERSION}" \
   -schema-location default -schema-location "${CRD_CATALOG}" \
   rendered/*/manifests.yaml
 
-for env in dev prod; do
+for env in dev prod helm-dev helm-prod; do
   echo "== kube-linter (${env})"
   kube-linter lint "rendered/${env}"
   echo "== platform policy (${env})"

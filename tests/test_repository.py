@@ -34,7 +34,8 @@ def container(docs, name):
 
 class YamlSyntaxTest(unittest.TestCase):
     def test_every_yaml_file_parses(self):
-        files = [p for p in ROOT.rglob("*.y*ml") if ".venv" not in p.parts and "rendered" not in p.parts]
+        skip = {".venv", "rendered", "templates"}  # chart templates are Go templates, not YAML
+        files = [p for p in ROOT.rglob("*.y*ml") if not skip & set(p.parts)]
         self.assertGreater(len(files), 30)
         for path in files:
             with self.subTest(path=path.relative_to(ROOT)):

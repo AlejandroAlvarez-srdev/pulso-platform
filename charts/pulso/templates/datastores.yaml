@@ -1,0 +1,257 @@
+{{- if .Values.dataStores.inCluster }}
+{{- $pg := .Values.dataStores.postgres }}
+{{- $rd := .Values.dataStores.redis }}
+# Dev-only Postgres and Redis. In prod the services use managed instances.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "postgres") | nindent 4 }}
+type: Opaque
+stringData:
+  POSTGRES_USER: {{ $pg.user | quote }}
+  POSTGRES_PASSWORD: {{ required "dataStores.postgres.password is required with inCluster data stores" $pg.password | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "postgres") | nindent 4 }}
+data:
+  initdb.sql: |
+    {{- range $pg.databases }}
+    CREATE DATABASE {{ . }};
+    {{- end }}
+{{- range $store := list "postgres" "redis" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $store }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ $store) | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $store }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ $store) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "pulso.selectorLabels" (list $ $store) | nindent 4 }}
+  ports:
+    - name: {{ $store }}
+      port: {{ ternary 5432 6379 (eq $store "postgres") }}
+      targetPort: {{ $store }}
+      protocol: TCP
+{{- if $.Values.networkPolicies.enabled }}
+---
+# Only the services flagged for this store (and the migration Job for Postgres) may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $store }}-ingress
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ $store) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $store }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        {{- range $name, $svc := $.Values.services }}
+        {{- if and $svc.enabled (index $svc.networkPolicy $store) }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $name }}
+        {{- end }}
+        {{- end }}
+        {{- if and (eq $store "postgres") $.Values.migrations.enabled }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orders-api-migrate
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ ternary 5432 6379 (eq $store "postgres") }}
+{{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "postgres") | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "pulso.selectorLabels" (list $ "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulso.labels" (list $ "postgres") | nindent 8 }}
+        app.kubernetes.io/component: database
+    spec:
+      serviceAccountName: postgres
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ $pg.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ $pg.user | quote }}, "-d", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ $pg.user | quote }}, "-d", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ $pg.user | quote }}, "-d", "postgres", "-h", "127.0.0.1"]
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: initdb
+          configMap:
+            name: postgres-initdb
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ $pg.storage }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "redis") | nindent 4 }}
+    app.kubernetes.io/component: cache
+spec:
+  serviceName: redis
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "pulso.selectorLabels" (list $ "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulso.labels" (list $ "redis") | nindent 8 }}
+        app.kubernetes.io/component: cache
+    spec:
+      serviceAccountName: redis
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: {{ $rd.image }}
+          imagePullPolicy: IfNotPresent
+          args: ["redis-server", "--appendonly", "yes", "--save", "", "--protected-mode", "no"]
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          startupProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ $rd.storage }}
+{{- end }}

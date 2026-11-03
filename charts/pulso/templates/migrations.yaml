@@ -1,0 +1,77 @@
+{{- if .Values.migrations.enabled }}
+{{- $orders := index .Values.services "orders-api" }}
+{{- $tag := .Values.migrations.tag | default $orders.tag }}
+# One Job per release revision: a new name each upgrade sidesteps the immutable pod template,
+# and the TTL cleans finished Jobs up. `prisma migrate deploy` is a no-op on a current schema.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orders-api-migrate-{{ .Release.Revision }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "orders-api-migrate") | nindent 4 }}
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "pulso.labels" (list $ "orders-api-migrate") | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: orders-api
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml (omit .Values.podSecurityContext "fsGroup") | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "pulso.image" (list $ .Values.migrations.image $tag) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.migrations.command | nindent 12 }}
+          env:
+            # npm and npx write caches and logs under $HOME; the root filesystem is read-only.
+            - name: HOME
+              value: /tmp
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orders-api-secrets
+                  key: DATABASE_URL
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+{{- if .Values.networkPolicies.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orders-api-migrate-egress
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "orders-api-migrate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: orders-api-migrate
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        {{- include "pulso.dataEgressPeer" (list $ "postgres") | trim | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}
+{{- end }}

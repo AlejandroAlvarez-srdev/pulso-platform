@@ -1,0 +1,220 @@
+# Defaults mirror k8s/base. values-dev.yaml and values-prod.yaml mirror the overlays.
+# Install into a namespace labelled for Pod Security "restricted" (see README).
+
+image:
+  registry: ghcr.io/pulso
+  # Default tag for every service; services.<name>.tag overrides it.
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Extra annotations on every Deployment (prod uses it for Reloader).
+deploymentAnnotations: {}
+
+# Spread replicas across zones (prod).
+topologySpread:
+  enabled: false
+
+services:
+  orders-api:
+    enabled: true
+    image: pulso-orders-api
+    tag: ""
+    component: api
+    port: 3000
+    healthPath: /health
+    # /health also checks Postgres; liveness must not, so it is a TCP check.
+    livenessTcp: true
+    ingressPath: /api/orders
+    replicas: 1
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilization: 70
+    resources:
+      requests: {cpu: 100m, memory: 192Mi}
+      limits: {cpu: 500m, memory: 384Mi}
+    env:
+      PORT: "3000"
+      NODE_ENV: production
+      PERSISTENCE: prisma
+      JWT_ISSUER: pulso-orders-api
+      JWT_TTL_SECONDS: "3600"
+      NODE_OPTIONS: --max-old-space-size=288
+    secretKeys: [DATABASE_URL, JWT_SECRET]
+    dataVolume: false
+    networkPolicy:
+      public: true
+      allowFrom: []
+      egressTo: []
+      postgres: true
+      redis: false
+      externalHttps: false
+
+  matching:
+    enabled: true
+    image: pulso-matching
+    tag: ""
+    component: api
+    port: 8000
+    healthPath: /health
+    livenessTcp: false
+    ingressPath: ""
+    replicas: 1
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilization: 70
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: 1000m, memory: 512Mi}
+    env:
+      WEB_CONCURRENCY: "2"
+      PULSO_MAX_RADIUS_KM: "8"
+      PULSO_MAX_ETA_MINUTES: "45"
+    secretKeys: []
+    dataVolume: false
+    networkPolicy:
+      public: false
+      allowFrom: [saga]
+      egressTo: []
+      postgres: false
+      redis: false
+      externalHttps: false
+
+  support-agents:
+    enabled: true
+    image: pulso-support-agents
+    tag: ""
+    component: api
+    port: 8000
+    healthPath: /healthz
+    livenessTcp: false
+    ingressPath: /api/support
+    # SQLite checkpoints are per pod: keep one replica until they move to Postgres.
+    replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 1
+      targetCPUUtilization: 70
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+    env:
+      PULSO_LLM_PROVIDER: scripted
+      PULSO_MAX_AGENT_STEPS: "6"
+      PULSO_REFUND_THRESHOLD_CENTS: "50000"
+      PULSO_CHECKPOINT_DB: /data/threads.sqlite
+      WEB_CONCURRENCY: "1"
+    secretKeys: [ANTHROPIC_API_KEY]
+    dataVolume: true
+    networkPolicy:
+      public: true
+      allowFrom: []
+      egressTo: []
+      postgres: false
+      redis: false
+      externalHttps: true
+
+  saga:
+    enabled: true
+    image: pulso-saga
+    tag: ""
+    component: worker
+    port: 8090
+    healthPath: /health
+    livenessTcp: false
+    ingressPath: ""
+    replicas: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 1
+      targetCPUUtilization: 70
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 250m, memory: 256Mi}
+    env:
+      PORT: "8090"
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=192
+      STEP_TIMEOUT_MS: "15000"
+      MAX_COMPENSATION_ATTEMPTS: "5"
+    secretKeys: [REDIS_URL]
+    dataVolume: false
+    networkPolicy:
+      public: false
+      allowFrom: []
+      egressTo: [matching]
+      postgres: false
+      redis: true
+      externalHttps: false
+
+# Prisma migrations for orders-api, run from its build stage on every release revision.
+migrations:
+  enabled: true
+  image: pulso-orders-api-migrate
+  # Empty: same tag as orders-api.
+  tag: ""
+  command: ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
+
+ingress:
+  enabled: true
+  className: nginx
+  host: pulso.localtest.me
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+  tls:
+    enabled: false
+    secretName: ""
+
+networkPolicies:
+  enabled: true
+  # Namespace of the ingress controller allowed to reach public services.
+  ingressNamespace: ingress-nginx
+
+# inCluster: true runs Postgres and Redis as StatefulSets (dev only). Otherwise the services
+# use managed instances and egress is limited to these CIDRs.
+dataStores:
+  inCluster: false
+  postgresCidr: 10.40.0.0/24
+  redisCidr: 10.40.1.0/24
+  postgres:
+    image: postgres:16.4-alpine
+    user: pulso
+    password: ""
+    databases: [orders]
+    storage: 1Gi
+  redis:
+    image: redis:7.2.5-alpine
+    storage: 1Gi
+
+secrets:
+  # "generated": Secrets rendered from secrets.generated (dummy values, dev only).
+  # "external": ExternalSecrets read from the SecretStore below (External Secrets Operator).
+  mode: external
+  generated: {}
+  external:
+    refreshInterval: 1h
+    keyPrefix: pulso/prod
+    store:
+      name: aws-secrets-manager
+      region: us-east-1
+      roleArn: arn:aws:iam::123456789012:role/pulso-prod-secrets-reader

@@ -78,13 +78,21 @@ jobs:
           done
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm lint (default, dev and prod values)
+        run: make helm-lint
+
       - name: Tool versions
         run: |
+          helm version
           kustomize version
           kubeconform -v
           kube-linter version
 
-      - name: Render overlays (dev, prod, kind-smoke)
+      - name: Render overlays (dev, prod, kind-smoke) and the chart (helm template)
         run: make render
 
       - name: kubeconform + kube-linter + platform policy

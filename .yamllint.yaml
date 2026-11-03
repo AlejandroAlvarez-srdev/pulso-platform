@@ -3,6 +3,8 @@ extends: default
 ignore: |
   rendered/
   .venv/
+  # Go templates, validated by helm lint / helm template instead.
+  charts/*/templates/
 
 rules:
   document-start: disable

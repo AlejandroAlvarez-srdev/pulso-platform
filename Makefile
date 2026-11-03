@@ -28,12 +28,22 @@ lint: ## yamllint + shellcheck
 test: ## Policy unit tests and manifest/compose consistency tests
 	$(PYTHON) -m unittest discover -s tests -t . -v
 
+.PHONY: helm-lint
+helm-lint: ## helm lint the chart with the default, dev and prod values
+	helm lint charts/pulso
+	helm lint charts/pulso --values charts/pulso/values-dev.yaml
+	helm lint charts/pulso --values charts/pulso/values-prod.yaml
+
+.PHONY: helm-deploy-dev
+helm-deploy-dev: ## Install/upgrade the chart with dev values (alternative to deploy-dev)
+	helm upgrade --install pulso charts/pulso --namespace $(NAMESPACE) --values charts/pulso/values-dev.yaml --wait --timeout 5m
+
 .PHONY: render
-render: ## kustomize build every overlay into rendered/
+render: ## kustomize build every overlay and helm template the chart into rendered/
 	./scripts/render.sh
 
 .PHONY: validate
-validate: render ## kubeconform + kube-linter + platform policy on rendered overlays
+validate: render ## kubeconform + kube-linter + platform policy on rendered overlays and chart
 	PYTHON=$(PYTHON) ./scripts/validate.sh
 
 .PHONY: compose-config

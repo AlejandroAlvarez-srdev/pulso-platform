@@ -1,0 +1,124 @@
+{{- if .Values.networkPolicies.enabled }}
+# Zero-trust baseline: deny everything, then allow each flow from services.<name>.networkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "default-deny-all") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "allow-dns-egress") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $np := $svc.networkPolicy }}
+{{- if or $np.public $np.allowFrom }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-ingress
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ $name) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        {{- if $np.public }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.networkPolicies.ingressNamespace }}
+        {{- end }}
+        {{- range $np.allowFrom }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $svc.port }}
+{{- end }}
+{{- if or $np.egressTo $np.postgres $np.redis $np.externalHttps }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-egress
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ $name) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  policyTypes: ["Egress"]
+  egress:
+    {{- range $np.egressTo }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ . }}
+      ports:
+        - protocol: TCP
+          port: {{ (index $.Values.services .).port }}
+    {{- end }}
+    {{- if $np.postgres }}
+    - to:
+        {{- include "pulso.dataEgressPeer" (list $ "postgres") | trim | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- if $np.redis }}
+    - to:
+        {{- include "pulso.dataEgressPeer" (list $ "redis") | trim | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 6379
+    {{- end }}
+    {{- if $np.externalHttps }}
+    # Third-party HTTPS; private ranges excluded so it cannot reach in-cluster services.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

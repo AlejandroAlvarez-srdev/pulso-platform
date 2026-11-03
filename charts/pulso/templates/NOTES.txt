@@ -1,0 +1,10 @@
+Pulso {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Secrets mode: {{ .Values.secrets.mode }}{{ if eq .Values.secrets.mode "external" }} (External Secrets Operator must be installed){{ end }}
+Data stores:  {{ if .Values.dataStores.inCluster }}in-cluster StatefulSets (dev only){{ else }}managed ({{ .Values.dataStores.postgresCidr }}, {{ .Values.dataStores.redisCidr }}){{ end }}
+
+Check the rollout:
+  kubectl -n {{ .Release.Namespace }} get pods,jobs
+{{- if .Values.ingress.enabled }}
+  curl -H 'Host: {{ .Values.ingress.host }}' http://<ingress-address>/api/orders/health
+{{- end }}

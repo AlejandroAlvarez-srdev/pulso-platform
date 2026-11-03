@@ -1,0 +1,48 @@
+# Equivalent of k8s/overlays/prod.
+deploymentAnnotations:
+  reloader.stakater.com/auto: "true"
+
+topologySpread:
+  enabled: true
+
+services:
+  orders-api:
+    tag: "1.4.2"
+    autoscaling: {minReplicas: 3, maxReplicas: 12}
+    resources:
+      requests: {cpu: 250m, memory: 512Mi}
+      limits: {cpu: 1000m, memory: 768Mi}
+    env:
+      NODE_OPTIONS: --max-old-space-size=576
+  matching:
+    tag: "0.9.1"
+    autoscaling: {minReplicas: 3, maxReplicas: 12}
+    resources:
+      requests: {cpu: 250m, memory: 512Mi}
+      limits: {cpu: 2000m, memory: 1Gi}
+    env:
+      WEB_CONCURRENCY: "4"
+  support-agents:
+    tag: "0.6.0"
+    resources:
+      requests: {cpu: 200m, memory: 512Mi}
+      limits: {cpu: 1000m, memory: 1Gi}
+    env:
+      PULSO_LLM_PROVIDER: anthropic
+  saga:
+    tag: "1.1.0"
+    replicas: 2
+    resources:
+      requests: {cpu: 100m, memory: 192Mi}
+      limits: {cpu: 500m, memory: 384Mi}
+    env:
+      NODE_OPTIONS: --max-old-space-size=288
+
+ingress:
+  host: api.pulso.example
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  tls:
+    enabled: true
+    secretName: pulso-api-tls

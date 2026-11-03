@@ -1,0 +1,130 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ $name) | nindent 4 }}
+    app.kubernetes.io/component: {{ $svc.component }}
+  {{- with $.Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- /* With an HPA, spec.replicas is left out so upgrades never reset its count. */}}
+  {{- if not $svc.autoscaling.enabled }}
+  replicas: {{ $svc.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "pulso.selectorLabels" (list $ $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulso.labels" (list $ $name) | nindent 8 }}
+        app.kubernetes.io/component: {{ $svc.component }}
+      annotations:
+        # Roll the pods when their configuration changes.
+        checksum/config: {{ toJson $svc.env | sha256sum }}
+        {{- if eq $.Values.secrets.mode "generated" }}
+        checksum/secret: {{ toJson (index $.Values.secrets.generated $name | default dict) | sha256sum }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "pulso.selectorLabels" (list $ $name) | nindent 20 }}
+      {{- if $.Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "pulso.selectorLabels" (list $ $name) | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "pulso.image" (list $ $svc.image $svc.tag) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}-config
+            {{- if $svc.secretKeys }}
+            - secretRef:
+                name: {{ $name }}-secrets
+            {{- end }}
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ $svc.healthPath }}
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: {{ $svc.healthPath }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            {{- if $svc.livenessTcp }}
+            tcpSocket:
+              port: http
+            {{- else }}
+            httpGet:
+              path: {{ $svc.healthPath }}
+              port: http
+            {{- end }}
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          securityContext:
+            {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if $svc.dataVolume }}
+            - name: data
+              mountPath: /data
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- if $svc.dataVolume }}
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- end }}
+{{- end }}
+{{- end }}

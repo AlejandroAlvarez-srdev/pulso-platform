@@ -1,0 +1,40 @@
+# Equivalent of k8s/overlays/dev.
+image:
+  tag: dev
+
+dataStores:
+  inCluster: true
+  postgres:
+    password: pulso-dev-only
+
+secrets:
+  mode: generated
+  # DUMMY values for local clusters only.
+  generated:
+    orders-api:
+      DATABASE_URL: postgresql://pulso:pulso-dev-only@postgres:5432/orders?schema=public
+      JWT_SECRET: dev-only-jwt-secret-not-for-production
+    support-agents:
+      ANTHROPIC_API_KEY: dummy-anthropic-key
+    saga:
+      REDIS_URL: redis://redis:6379/0
+
+services:
+  orders-api:
+    autoscaling: {minReplicas: 1, maxReplicas: 2}
+    resources:
+      requests: {cpu: 25m, memory: 96Mi}
+    env:
+      NODE_ENV: development
+  matching:
+    autoscaling: {minReplicas: 1, maxReplicas: 2}
+    resources:
+      requests: {cpu: 25m, memory: 96Mi}
+    env:
+      WEB_CONCURRENCY: "1"
+  support-agents:
+    resources:
+      requests: {cpu: 25m, memory: 96Mi}
+  saga:
+    resources:
+      requests: {cpu: 25m, memory: 96Mi}

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: pulso
+description: The Pulso services (orders-api, matching, support-agents, saga) as one Helm release; equivalent to k8s/base plus the dev/prod overlays.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/pulso/pulso-platform
+keywords: ["pulso", "microservices"]
+maintainers:
+  - name: Alejandro Álvarez
