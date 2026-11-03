@@ -169,7 +169,8 @@ spec:
         - protocol: TCP
           port: 6379
 ---
-# Prometheus (kube-prometheus-stack in "monitoring") scrapes /metrics on each service port.
+# Prometheus (kube-prometheus-stack in "monitoring") scrapes /metrics on the services that
+# expose it: orders-api and matching.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -179,7 +180,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/name
         operator: In
-        values: ["orders-api", "matching", "support-agents", "saga"]
+        values: ["orders-api", "matching"]
   policyTypes: ["Ingress"]
   ingress:
     - from:
@@ -194,5 +195,3 @@ spec:
           port: 3000
         - protocol: TCP
           port: 8000
-        - protocol: TCP
-          port: 8090

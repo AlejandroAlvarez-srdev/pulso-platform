@@ -20,6 +20,8 @@ Work through these in order. The point is to stop the bleeding first and underst
    a 5xx ratio or p95 above normal, since when, and whether it is every route or one.
    Merchants failing to create orders (orders-api) is SEV1. Support replies degraded
    (support-agents) is SEV2.
+   The dashboard covers orders-api and matching. For support-agents and saga, use pod
+   status, restarts and logs.
 3. **Look for a recent change.** Most incidents follow one.
    ```bash
    kubectl argo rollouts get rollout orders-api        # if the canary component is enabled
@@ -160,12 +162,17 @@ These show up as `Readiness probe failed` or `Liveness probe failed` in events.
 
 - **`connection refused`.** The app listens on another port or only on `127.0.0.1`.
   orders-api and saga use `$PORT`. matching and support-agents always listen on `:8000`.
-- **404.** The probe path is wrong. support-agents serves `/healthz`, the others `/health`.
+- **404.** The probe path is wrong:
+  - orders-api serves `/health/live` (startup, liveness) and `/health/ready` (readiness);
+  - support-agents serves `/healthz`;
+  - matching and saga serve `/health`.
 - **Restarted during boot.** A slow start needs more `startupProbe.failureThreshold`
   (currently 24 x 5 s = 2 min). Liveness only starts after the startup probe passes.
-- **orders-api not ready while Postgres is down.** This is expected: its `/health` checks
-  the database, so readiness takes the pods out of the Service. Liveness is a TCP check on
-  purpose, so a database outage never restarts every pod.
+- **orders-api not ready while Postgres is down.** This is expected. `/health/ready` checks
+  the database, so readiness takes the pods out of the Service. Liveness uses `/health/live`,
+  which ignores dependencies, so a database outage never restarts every pod.
+- **orders-api not ready during a rollout's terminations.** This is expected too.
+  `/health/ready` answers 503 (`"status": "draining"`) during the 5 s drain after SIGTERM.
 - **Ready, then not ready under load.** Readiness is doing what it should and shedding the
   pod. Look at latency and dependencies instead of relaxing the probe.
 
@@ -214,12 +221,27 @@ restarts the Deployments once the Secret is updated.
 - **Degraded** usually means a Deployment that cannot become ready. Go to the sections above.
 - **A sync blocked outside the prod window.** Run a manual sync if the change is urgent.
 
-### Targets down / PulsoMetricsMissing
+### Metrics target down
 
-Prometheus cannot scrape `/metrics`. Check the `allow-prometheus-scrape` NetworkPolicy and
-confirm the service exposes the metrics contract described in
-`k8s/observability/service-monitors.yaml`. Today none of the services does, so this alert
-is expected until they are instrumented.
+`PulsoMetricsTargetDown`: Prometheus cannot scrape `/metrics` on orders-api or matching.
+These are the only scraped services; support-agents and saga have no exporter yet.
+
+1. Check the target's error in the Prometheus UI (Status → Targets).
+2. **Connection refused or timeout:** check that the pod is running and that
+   `allow-prometheus-scrape` still allows the `monitoring` namespace and the port.
+3. **404:** the service no longer serves `/metrics`. Fix the ServiceMonitor or the service.
+4. **Panels empty but the target is up:** the exporter renamed its histogram or status
+   label. Update the `metricRelabelings` in `k8s/observability/service-monitors.yaml`.
+
+### 502/503 during deploys
+
+orders-api drains for 5 s and must exit within 25 s, inside a 30 s grace period.
+
+- **5xx at every rollout:** look for `shutdown exceeded` in the logs of terminating pods.
+  Long requests or a slow Prisma pool close need a larger `SHUTDOWN_TIMEOUT_MS` *and*
+  `terminationGracePeriodSeconds` (the timeout must stay below the grace period).
+- **Services without self-draining** (matching, support-agents, saga) rely on the 5 s
+  preStop sleep. Increase it if ingress-nginx is slow to drop endpoints.
 
 ### Pending / ImagePullBackOff
 

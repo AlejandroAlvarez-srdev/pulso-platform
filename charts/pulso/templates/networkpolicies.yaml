@@ -36,7 +36,7 @@ spec:
           port: 53
 {{- if .Values.networkPolicies.prometheusNamespace }}
 ---
-# Prometheus scrapes /metrics on each service port.
+# Prometheus scrapes /metrics on the services with metrics: true.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -51,7 +51,7 @@ spec:
         operator: In
         values:
           {{- range $name, $svc := .Values.services }}
-          {{- if $svc.enabled }}
+          {{- if and $svc.enabled $svc.metrics }}
           - {{ $name }}
           {{- end }}
           {{- end }}
@@ -67,7 +67,7 @@ spec:
       ports:
         {{- $ports := list }}
         {{- range $name, $svc := .Values.services }}
-        {{- if $svc.enabled }}
+        {{- if and $svc.enabled $svc.metrics }}
         {{- $ports = append $ports $svc.port }}
         {{- end }}
         {{- end }}

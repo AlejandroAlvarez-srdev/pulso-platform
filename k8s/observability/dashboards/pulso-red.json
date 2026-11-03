@@ -92,7 +92,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(http_requests_total{namespace=\"pulso\", job=~\"$service\"}[5m]))"
+          "expr": "sum(rate(http_request_duration_seconds_count{namespace=\"pulso\", job=~\"$service\"}[5m]))"
         }
       ]
     },
@@ -148,7 +148,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(http_requests_total{namespace=\"pulso\", job=~\"$service\", status=~\"5..\"}[5m])) / sum(rate(http_requests_total{namespace=\"pulso\", job=~\"$service\"}[5m]))"
+          "expr": "sum(rate(http_request_duration_seconds_count{namespace=\"pulso\", job=~\"$service\", status=~\"5..\"}[5m])) / sum(rate(http_request_duration_seconds_count{namespace=\"pulso\", job=~\"$service\"}[5m]))"
         }
       ]
     },
@@ -309,7 +309,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (job) (rate(http_requests_total{namespace=\"pulso\", job=~\"$service\"}[5m]))",
+          "expr": "sum by (job) (rate(http_request_duration_seconds_count{namespace=\"pulso\", job=~\"$service\"}[5m]))",
           "legendFormat": "{{job}}"
         }
       ]
@@ -359,7 +359,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (job) (rate(http_requests_total{namespace=\"pulso\", job=~\"$service\", status=~\"5..\"}[5m])) / sum by (job) (rate(http_requests_total{namespace=\"pulso\", job=~\"$service\"}[5m]))",
+          "expr": "sum by (job) (rate(http_request_duration_seconds_count{namespace=\"pulso\", job=~\"$service\", status=~\"5..\"}[5m])) / sum by (job) (rate(http_request_duration_seconds_count{namespace=\"pulso\", job=~\"$service\"}[5m]))",
           "legendFormat": "{{job}}"
         }
       ]
@@ -527,7 +527,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (job, status) (rate(http_requests_total{namespace=\"pulso\", job=~\"$service\"}[5m]))",
+          "expr": "sum by (job, status) (rate(http_request_duration_seconds_count{namespace=\"pulso\", job=~\"$service\"}[5m]))",
           "legendFormat": "{{job}} {{status}}"
         }
       ]
@@ -582,5 +582,6 @@
         }
       ]
     }
-  ]
+  ],
+  "description": "RED metrics for the services that export /metrics (orders-api, matching)."
 }

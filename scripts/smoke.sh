@@ -50,6 +50,13 @@ if [[ -n "${INGRESS_HOST}" ]]; then
       failures=$((failures + 1))
     fi
   done
+  status="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${INGRESS_HOST}" http://127.0.0.1/api/orders/metrics)"
+  if [[ "${status}" == "403" ]]; then
+    echo "ok    ingress blocks orders-api /metrics (403)"
+  else
+    echo "FAIL  ingress answered ${status} for /api/orders/metrics (metrics exposed publicly?)" >&2
+    failures=$((failures + 1))
+  fi
   status="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${INGRESS_HOST}" http://127.0.0.1/api/matching/health)"
   if [[ "${status}" == "404" ]]; then
     echo "ok    ingress does not expose matching (404)"

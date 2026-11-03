@@ -192,6 +192,11 @@ class PortContractTest(unittest.TestCase):
                     if dest in port_of:
                         self.assertEqual([p["port"] for p in rule["ports"]], [port_of[dest]], policy["metadata"]["name"])
 
+    def test_prod_moves_every_ingress_to_the_prod_host(self):
+        targets = {p["target"]["name"] for p in kustomization(PROD)["patches"] if p.get("target", {}).get("kind") == "Ingress"}
+        ingresses = {d["metadata"]["name"] for d in self.base if d["kind"] == "Ingress"}
+        self.assertEqual(targets, ingresses)
+
     def test_ingress_routes_only_public_services(self):
         ingress = by_kind_name(self.base)[("Ingress", "pulso-public")]
         backends = {p["backend"]["service"]["name"] for r in ingress["spec"]["rules"] for p in r["http"]["paths"]}

@@ -30,3 +30,28 @@ spec:
                 name: support-agents
                 port:
                   name: http
+---
+# orders-api serves /metrics on its HTTP port, and the public route would rewrite
+# /api/orders/metrics to it. This Ingress claims that path on the same host and only
+# allows 127.0.0.1, so ingress-nginx answers 403 to every client; Prometheus scrapes the
+# pods directly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pulso-public-blocked-paths
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/whitelist-source-range: 127.0.0.1/32
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pulso.localtest.me
+      http:
+        paths:
+          - path: /api/orders/metrics
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: orders-api
+                port:
+                  name: http

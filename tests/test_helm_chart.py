@@ -7,7 +7,7 @@ pin the values files to the manifests so the two deployment paths cannot drift a
 import copy
 import unittest
 
-from tests.support import APPS, K8S, LIVENESS_PATHS, ROOT, generator_literals, kustomization, load_kustomization, read_yaml
+from tests.support import APPS, K8S, LIVENESS_PATHS, METRICS, ROOT, generator_literals, kustomization, load_kustomization, read_yaml
 
 CHART = ROOT / "charts" / "pulso"
 BASE = K8S / "base"
@@ -133,6 +133,9 @@ class HelmChartParityTest(unittest.TestCase):
         public = {n for n, s in services.items() if s["networkPolicy"]["public"]}
         self.assertEqual(public, {n for n, s in services.items() if s["ingressPath"]})
         self.assertEqual(public, {"orders-api", "support-agents"})
+
+    def test_metrics_flags_match_the_exporters(self):
+        self.assertEqual({n for n, s in values()["services"].items() if s["metrics"]}, set(METRICS))
 
     def test_dev_runs_data_stores_in_cluster_prod_does_not(self):
         self.assertTrue(values("dev")["dataStores"]["inCluster"])

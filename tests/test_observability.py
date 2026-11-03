@@ -4,10 +4,10 @@ import json
 import re
 import unittest
 
-from tests.support import APPS, K8S, ROOT, load_kustomization, read_yaml
+from tests.support import APPS, K8S, METRICS, ROOT, load_kustomization, read_yaml
 
 OBS = K8S / "observability"
-CONTRACT = {"http_requests_total", "http_request_duration_seconds_bucket"}
+CONTRACT = {"http_request_duration_seconds_count", "http_request_duration_seconds_bucket"}
 # Series that come from Prometheus itself or kube-state-metrics, not from the services.
 PLATFORM = {
     "up",
@@ -41,7 +41,7 @@ class DashboardTest(unittest.TestCase):
 
     def test_covers_rate_errors_duration(self):
         exprs = " ".join(t["expr"] for p in self.dashboard["panels"] for t in p["targets"])
-        self.assertIn("rate(http_requests_total", exprs)
+        self.assertIn("rate(http_request_duration_seconds_count", exprs)
         self.assertIn('status=~"5.."', exprs)
         self.assertIn("histogram_quantile(0.95", exprs)
 
@@ -59,21 +59,47 @@ class DashboardTest(unittest.TestCase):
 
 
 class ScrapeConfigTest(unittest.TestCase):
-    def test_service_monitor_selects_every_service_on_http(self):
-        monitor = read_yaml(OBS / "service-monitors.yaml")[0]
-        values = monitor["spec"]["selector"]["matchExpressions"][0]["values"]
-        self.assertEqual(set(values), set(APPS))
-        self.assertEqual([e["port"] for e in monitor["spec"]["endpoints"]], ["http"])
-        self.assertEqual(monitor["spec"]["endpoints"][0]["path"], "/metrics")
+    def test_monitors_only_for_services_that_serve_metrics(self):
+        monitors = {m["metadata"]["name"]: m for m in read_yaml(OBS / "service-monitors.yaml")}
+        self.assertEqual(set(monitors), set(METRICS))
         services = {d["metadata"]["name"]: d for d in load_kustomization(K8S / "base") if d["kind"] == "Service"}
-        for name in APPS:
-            self.assertIn("http", [p["name"] for p in services[name]["spec"]["ports"]])
+        for name, monitor in monitors.items():
+            with self.subTest(service=name):
+                self.assertEqual(monitor["spec"]["selector"]["matchLabels"], {"app.kubernetes.io/name": name})
+                endpoint = monitor["spec"]["endpoints"][0]
+                self.assertEqual((endpoint["port"], endpoint["path"]), ("http", "/metrics"))
+                self.assertIn("http", [p["name"] for p in services[name]["spec"]["ports"]])
 
-    def test_network_policy_lets_prometheus_reach_every_port(self):
+    def test_relabelings_normalise_to_the_contract(self):
+        monitors = {m["metadata"]["name"]: m for m in read_yaml(OBS / "service-monitors.yaml")}
+        for name, (histogram, status_label) in METRICS.items():
+            relabelings = monitors[name]["spec"]["endpoints"][0].get("metricRelabelings", [])
+            with self.subTest(service=name):
+                if histogram != "http_request_duration_seconds":
+                    rename = next(r for r in relabelings if r.get("targetLabel") == "__name__")
+                    self.assertTrue(re.fullmatch(rename["regex"], f"{histogram}_count"))
+                    self.assertEqual(re.sub(rename["regex"], rename["replacement"].replace("$1", r"\1"), f"{histogram}_count"),
+                                     "http_request_duration_seconds_count")
+                if status_label != "status":
+                    copy = next(r for r in relabelings if r.get("targetLabel") == "status")
+                    self.assertEqual(copy["sourceLabels"], [status_label])
+                    self.assertTrue(any(r["action"] == "labeldrop" and r["regex"] == status_label for r in relabelings))
+
+    def test_network_policy_lets_prometheus_reach_exporters_only(self):
         policy = next(d for d in load_kustomization(K8S / "base") if d["metadata"]["name"] == "allow-prometheus-scrape")
         ports = {p["port"] for p in policy["spec"]["ingress"][0]["ports"]}
-        self.assertEqual(ports, {app[1] for app in APPS.values()})
-        self.assertEqual(set(policy["spec"]["podSelector"]["matchExpressions"][0]["values"]), set(APPS))
+        self.assertEqual(ports, {APPS[name][1] for name in METRICS})
+        self.assertEqual(set(policy["spec"]["podSelector"]["matchExpressions"][0]["values"]), set(METRICS))
+
+    def test_public_metrics_paths_are_blocked(self):
+        ingresses = {d["metadata"]["name"]: d for d in load_kustomization(K8S / "base") if d["kind"] == "Ingress"}
+        public = ingresses["pulso-public"]["spec"]["rules"][0]["http"]["paths"]
+        exposed = {p["backend"]["service"]["name"]: p["path"].split("(")[0] for p in public}
+        blocked = ingresses["pulso-public-blocked-paths"]
+        self.assertEqual(blocked["metadata"]["annotations"]["nginx.ingress.kubernetes.io/whitelist-source-range"], "127.0.0.1/32")
+        paths = {p["path"] for p in blocked["spec"]["rules"][0]["http"]["paths"]}
+        self.assertEqual(paths, {f"{exposed[name]}/metrics" for name in METRICS if name in exposed})
+        self.assertEqual(blocked["spec"]["rules"][0]["host"], ingresses["pulso-public"]["spec"]["rules"][0]["host"])
 
     def test_stack_selects_monitors_from_all_namespaces(self):
         values = read_yaml(ROOT / "observability" / "kube-prometheus-stack" / "values.yaml")[0]

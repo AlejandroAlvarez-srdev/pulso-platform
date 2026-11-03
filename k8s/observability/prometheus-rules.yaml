@@ -9,11 +9,11 @@ spec:
     - name: pulso.red
       rules:
         - record: pulso:http_requests:rate5m
-          expr: sum by (job) (rate(http_requests_total{namespace="pulso"}[5m]))
+          expr: sum by (job) (rate(http_request_duration_seconds_count{namespace="pulso"}[5m]))
         - record: pulso:http_errors:ratio5m
           expr: |
-            sum by (job) (rate(http_requests_total{namespace="pulso", status=~"5.."}[5m]))
-              / sum by (job) (rate(http_requests_total{namespace="pulso"}[5m]))
+            sum by (job) (rate(http_request_duration_seconds_count{namespace="pulso", status=~"5.."}[5m]))
+              / sum by (job) (rate(http_request_duration_seconds_count{namespace="pulso"}[5m]))
         - record: pulso:http_latency:p95_5m
           expr: histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket{namespace="pulso"}[5m])))
         - alert: PulsoHighErrorRate
@@ -34,13 +34,16 @@ spec:
             runbook_url: https://github.com/pulso/pulso-platform/blob/main/docs/RUNBOOK.md#scaling-playbook
     - name: pulso.workloads
       rules:
-        - alert: PulsoMetricsMissing
+        # Only orders-api and matching are scraped, so a down target is a real failure
+        # (pod not answering /metrics, or a NetworkPolicy blocking Prometheus).
+        - alert: PulsoMetricsTargetDown
           expr: up{namespace="pulso"} == 0
           for: 10m
           labels:
             severity: ticket
           annotations:
-            summary: "{{ $labels.job }} ({{ $labels.instance }}) is not serving /metrics"
+            summary: "Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }})"
+            runbook_url: https://github.com/pulso/pulso-platform/blob/main/docs/RUNBOOK.md#metrics-target-down
         - alert: PulsoPodCrashLooping
           expr: increase(kube_pod_container_status_restarts_total{namespace="pulso"}[15m]) > 3
           labels:

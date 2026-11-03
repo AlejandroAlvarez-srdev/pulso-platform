@@ -29,6 +29,12 @@ APPS = {
 # Liveness/startup path where it differs from the readiness path (orders-api's readiness
 # includes Postgres and draining; its liveness deliberately does not).
 LIVENESS_PATHS = {"orders-api": "/health/live"}
+# Services that serve Prometheus metrics on /metrics, and the raw names of their request
+# histograms (the ServiceMonitors normalise both to http_request_duration_seconds{status}).
+METRICS = {
+    "orders-api": ("http_request_duration_seconds", "status_code"),
+    "matching": ("pulso_http_request_duration_seconds", "status"),
+}
 # Services whose port comes from $PORT; the two FastAPI images start uvicorn on a fixed :8000.
 READS_PORT_ENV = {"orders-api", "saga"}
 

@@ -42,6 +42,8 @@ services:
     terminationGracePeriodSeconds: 30
     preStopSleepSeconds: 0
     ingressPath: /api/orders
+    # Serves Prometheus metrics on /metrics (scrape policy, and blocked on the public Ingress).
+    metrics: true
     replicas: 1
     autoscaling:
       enabled: true
@@ -83,6 +85,7 @@ services:
     # Time for endpoint removal to reach ingress-nginx and kube-proxy before SIGTERM.
     preStopSleepSeconds: 5
     ingressPath: ""
+    metrics: true
     replicas: 1
     autoscaling:
       enabled: true
@@ -120,6 +123,7 @@ services:
     # Time for endpoint removal to reach ingress-nginx and kube-proxy before SIGTERM.
     preStopSleepSeconds: 5
     ingressPath: /api/support
+    metrics: false
     # SQLite checkpoints are per pod: keep one replica until they move to Postgres.
     replicas: 1
     autoscaling:
@@ -158,6 +162,7 @@ services:
     # Time for endpoint removal to reach ingress-nginx and kube-proxy before SIGTERM.
     preStopSleepSeconds: 5
     ingressPath: ""
+    metrics: false
     replicas: 1
     autoscaling:
       enabled: false

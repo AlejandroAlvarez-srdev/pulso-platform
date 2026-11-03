@@ -1,5 +1,6 @@
-# Canary success rate from Prometheus. Needs the metrics contract (http_requests_total) and
-# the ServiceMonitor's podTargetLabels, which tag each series with the pod-template hash.
+# Canary success rate from Prometheus, using orders-api's request histogram
+# (http_request_duration_seconds_count, normalised by the orders-api ServiceMonitor) and the
+# ServiceMonitor's podTargetLabels, which tag each series with the pod-template hash.
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
@@ -18,8 +19,8 @@ spec:
         prometheus:
           address: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
           query: |
-            sum(rate(http_requests_total{namespace="pulso", job="orders-api",
+            sum(rate(http_request_duration_seconds_count{namespace="pulso", job="orders-api",
               rollouts_pod_template_hash="{{args.canary-hash}}", status!~"5.."}[2m]))
             /
-            sum(rate(http_requests_total{namespace="pulso", job="orders-api",
+            sum(rate(http_request_duration_seconds_count{namespace="pulso", job="orders-api",
               rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))

@@ -1,31 +1,61 @@
-# Prometheus scrapes every Pulso Service on its "http" port at /metrics.
+# Prometheus scrapes the services that really expose /metrics (checked in their repos):
+#   orders-api  prom-client:        http_request_duration_seconds{method, route, status_code}
+#   matching    prometheus-client:  pulso_http_request_duration_seconds{method, route, status}
+# support-agents and saga have no /metrics endpoint yet, so they are not scraped.
 #
-# Metrics contract (what the dashboard and alerts query), per service:
-#   http_requests_total{method, route, status}                 counter
-#   http_request_duration_seconds_bucket{method, route, status, le}  histogram
-# prom-client (orders-api, saga) and prometheus-fastapi-instrumentator (matching,
-# support-agents) can both be configured to emit these names and labels.
-# None of the services exposes /metrics yet; until they do these targets report
-# up == 0 and PulsoMetricsMissing fires, which is the intended signal.
+# metricRelabelings normalise both onto one contract, which the dashboard, the alerts and the
+# canary analysis query:
+#   http_request_duration_seconds_{bucket,count,sum}{method, route, status}
+# (request rate and error ratio come from the histogram's _count series).
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: pulso-services
+  name: orders-api
   labels:
     app.kubernetes.io/part-of: pulso
 spec:
   selector:
-    matchExpressions:
-      - key: app.kubernetes.io/name
-        operator: In
-        values: ["orders-api", "matching", "support-agents", "saga"]
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 30s
-      scrapeTimeout: 10s
+    matchLabels:
+      app.kubernetes.io/name: orders-api
   # The Service label app.kubernetes.io/name becomes the job label the dashboard filters on.
   jobLabel: app.kubernetes.io/name
   # Lets the Argo Rollouts analysis tell canary series from stable ones.
   podTargetLabels:
     - rollouts-pod-template-hash
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      metricRelabelings:
+        - sourceLabels: [status_code]
+          regex: (.+)
+          targetLabel: status
+          action: replace
+        - regex: status_code
+          action: labeldrop
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: matching
+  labels:
+    app.kubernetes.io/part-of: pulso
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: matching
+  jobLabel: app.kubernetes.io/name
+  podTargetLabels:
+    - rollouts-pod-template-hash
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: pulso_http_request_duration_seconds_(bucket|count|sum)
+          targetLabel: __name__
+          replacement: http_request_duration_seconds_$1
+          action: replace

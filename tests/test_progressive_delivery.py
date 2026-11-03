@@ -37,8 +37,9 @@ class CanaryComponentTest(unittest.TestCase):
         self.assertEqual([a["name"] for a in template["spec"]["args"]], [a["name"] for a in canary["analysis"]["args"]])
         query = template["spec"]["metrics"][0]["provider"]["prometheus"]["query"]
         self.assertIn("rollouts_pod_template_hash", query)
-        monitor = read_yaml(K8S / "observability" / "service-monitors.yaml")[0]
-        self.assertIn("rollouts-pod-template-hash", monitor["spec"]["podTargetLabels"])
+        self.assertIn("http_request_duration_seconds_count", query)
+        monitors = {m["metadata"]["name"]: m for m in read_yaml(K8S / "observability" / "service-monitors.yaml")}
+        self.assertIn("rollouts-pod-template-hash", monitors["orders-api"]["spec"]["podTargetLabels"])
 
     def test_steps_end_with_manual_promotion(self):
         steps = self.rollout["spec"]["strategy"]["canary"]["steps"]

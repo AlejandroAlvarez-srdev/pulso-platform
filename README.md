@@ -18,15 +18,16 @@ deploy, observe and operate the four Pulso services:
 
 | Service | Repo | Stack | Container port | Health | Exposure |
 |---|---|---|---|---|---|
-| orders-api | `pulso-orders-api` | NestJS + Prisma | 3000 (`$PORT`) | `/health` (checks Postgres) | public `/api/orders` |
+| orders-api | `pulso-orders-api` | NestJS + Prisma | 3000 (`$PORT`) | `/health/live`, `/health/ready` (Postgres, 503 while draining) | public `/api/orders` |
 | matching | `pulso-matching` | FastAPI | 8000 (fixed) | `/health` | internal |
 | support-agents | `pulso-support-agents` | FastAPI + LangGraph | 8000 (fixed) | `/healthz` | public `/api/support` |
 | saga | `pulso-saga` | Node orchestrator | 8090 (`$PORT`, default 3000) | `/health` | internal |
 | postgres | - | Postgres 16 | 5432 | `pg_isready` | dev: StatefulSet, prod: managed |
 | redis | - | Redis 7.2 | 6379 | `redis-cli ping` | dev: StatefulSet, prod: managed |
 
-The ports, health paths and environment variables above were checked against each
-service repository. `tests/support.py` pins them, and every manifest, the chart, compose
+orders-api and matching also serve Prometheus metrics on `/metrics`. support-agents and
+saga do not yet. The ports, health paths, metrics endpoints and environment variables above
+were checked against each service repository. `tests/support.py` pins them, and every manifest, the chart, compose
 and the smoke test are tested against that table.
 
 ## Architecture
@@ -64,7 +65,7 @@ flowchart LR
         prom[Prometheus] --> graf[Grafana]
         prom --> am[Alertmanager]
     end
-    prom -->|/metrics| orders & matching & support & saga
+    prom -->|/metrics| orders & matching
 ```
 
 ```mermaid
@@ -102,7 +103,7 @@ argocd/                      root.yaml (app of apps) and apps/ (AppProject, dev,
 observability/kube-prometheus-stack/values.yaml
 docs/RUNBOOK.md              incident checklist, deploy/rollback, scaling playbook, troubleshooting
 scripts/                     render.sh, validate.sh (schemas|lint|security), policy_check.py, wait-ready.sh, smoke.sh
-tests/                       83 tests: policy rules, manifests, chart parity, GitOps, observability, canary
+tests/                       88 tests: policy rules, manifests, chart parity, GitOps, observability, canary
 ```
 
 ## Running it
@@ -116,7 +117,7 @@ Clone the service repositories next to this one (`pulso/pulso-orders-api`, `puls
 cp .env.example .env      # optional, every variable has a default
 make compose-up           # docker compose up --build -d --wait
 docker compose ps         # all long-running services "healthy", orders-migrate "exited (0)"
-curl localhost:3000/health          # orders-api
+curl localhost:3000/health/ready    # orders-api (live: /health/live, metrics: /metrics)
 curl localhost:8080/healthz         # support-agents (container :8000, published on 8080)
 curl -X POST localhost:8090/orders  # start a saga; saga-participants plays payments/matching
 make compose-down
@@ -152,7 +153,7 @@ make kind-down
 
 ```bash
 pip install -r requirements-dev.txt
-make lint test                  # yamllint + shellcheck, 83 Python tests
+make lint test                  # yamllint + shellcheck, 88 Python tests
 make helm-lint validate         # needs helm, kustomize, kubeconform, kube-linter, trivy
 ```
 
@@ -160,8 +161,8 @@ make helm-lint validate         # needs helm, kustomize, kubeconform, kube-linte
 
 Kustomize is the source of truth that Argo CD syncs. The Helm chart renders the same
 objects from one values model per service, for teams that consume Helm. `test_helm_chart.py`
-keeps them aligned: ports, health paths, liveness type, env, resources, autoscaling, image
-tags, secret keys and network flows.
+keeps them aligned: ports, readiness and liveness paths, grace periods, env, resources,
+autoscaling, image tags, secret keys, network flows and which services export metrics.
 
 | | base / `values.yaml` | dev | prod |
 |---|---|---|---|
@@ -214,15 +215,17 @@ into an **Argo Rollouts** canary:
 - ingress-nginx shifts 10% → 25% → 50% of traffic through a canary Service, then waits at a
   manual promotion gate.
 - An `AnalysisTemplate` queries Prometheus every minute for the canary's success rate,
-  using the ServiceMonitor's `rollouts-pod-template-hash` label. Two results below 99%, or
+  computed from orders-api's request histogram (`http_request_duration_seconds_count` by
+  `status`) and split by the ServiceMonitor's `rollouts-pod-template-hash` label. Two results below 99%, or
   no data, abort the rollout and send all traffic back to stable.
 - The HPA is retargeted to the Rollout.
 
 `k8s/examples/prod-canary` (prod plus the component) is rendered and validated in CI. Turning
 it on for real means adding `components: [../../components/orders-api-canary]` to the prod
-overlay once the Rollouts controller is installed **and orders-api exports the metrics
-contract**. Without metrics the analysis is inconclusive, so every canary would abort,
-which is the safe failure mode. The same pattern applies to matching.
+overlay once the Rollouts controller is installed. orders-api already exports the metrics
+the analysis needs. If they ever go missing, the analysis is inconclusive and the canary
+aborts, which is the safe failure mode. The same pattern applies to matching, which exports
+the same histogram.
 
 ## Observability
 
@@ -236,26 +239,39 @@ which is the safe failure mode. The same pattern applies to matching.
 
 `k8s/observability` adds:
 
-- **ServiceMonitor** `pulso-services`: `/metrics` on each Service's `http` port, with the job
-  label set to the service name.
+- **ServiceMonitors** for **orders-api** and **matching** only, the two services that serve
+  `/metrics`. Each scrapes the Service's `http` port, with the job label set to the service
+  name. `metricRelabelings` normalise their request histograms (see the contract below).
 - **PrometheusRule** `pulso-services`:
   - RED recording rules;
   - `PulsoHighErrorRate` (5xx above 5%, page) and `PulsoHighLatency` (p95 above 500 ms);
-  - `PulsoMetricsMissing`, `PulsoPodCrashLooping`, `PulsoContainerOOMKilled` and `PulsoHPAAtMaximum`.
+  - `PulsoMetricsTargetDown`, `PulsoPodCrashLooping`, `PulsoContainerOOMKilled` and `PulsoHPAAtMaximum`.
 
   Each alert links to its section in `docs/RUNBOOK.md`.
 - **Grafana dashboard** "Pulso / Services (RED)": throughput, 5xx ratio, p50/p95/p99, p95
   by route, status breakdown and restarts, filterable by service.
 
 A NetworkPolicy (`allow-prometheus-scrape`) lets Prometheus in the `monitoring` namespace
-reach the service ports.
+reach the orders-api and matching ports. A second Ingress, `pulso-public-blocked-paths`,
+claims `/api/orders/metrics` on the public host and allows only `127.0.0.1`, so the
+rewrite never exposes orders-api's metrics to the internet. The smoke test checks that
+it returns 403.
 
-**Metrics contract.** Dashboards and alerts expect `http_requests_total{method,route,status}`
-and the histogram `http_request_duration_seconds{method,route,status}`.
+**Metrics contract.** The two exporters name things differently:
 
-**The services do not expose `/metrics` yet.** prom-client and
-prometheus-fastapi-instrumentator can emit those names. Until the services are
-instrumented, `PulsoMetricsMissing` fires by design.
+| Service | Library | Histogram | Status label |
+|---|---|---|---|
+| orders-api | prom-client | `http_request_duration_seconds` | `status_code` |
+| matching | prometheus-client | `pulso_http_request_duration_seconds` | `status` |
+
+The ServiceMonitors rename both to `http_request_duration_seconds_{bucket,count,sum}{method,route,status}`.
+Rate and error ratio come from `_count`, and latency from `_bucket`. The services' domain
+metrics (`orders_created_total`, `outbox_pending_events`, `pulso_degraded_batches`, ...)
+are scraped too and are ready for service-specific panels.
+
+support-agents and saga have no `/metrics` endpoint yet, so they are not scraped and do not
+appear on the dashboard. Their health is still covered by the probes and by the
+crash-loop, OOM and HPA alerts, which come from kube-state-metrics.
 
 ## CI
 
@@ -306,8 +322,16 @@ See **[docs/RUNBOOK.md](docs/RUNBOOK.md)**. It covers:
   - support-agents is on `:8000` with `/healthz`.
   - orders-api needs `JWT_SECRET` and Prisma migrations.
   - The FastAPI images ignore `PORT`, so no `PORT` is set for them.
-- **orders-api liveness is TCP, readiness is `/health`.** Its `/health` checks Postgres, and a
-  database outage must take pods out of rotation rather than restart all of them.
+- **orders-api: liveness `/health/live`, readiness `/health/ready`, and the app drains itself.**
+  - Liveness ignores dependencies, so a database outage takes pods out of rotation instead
+    of restarting all of them.
+  - On SIGTERM the app turns readiness to 503 and keeps serving for 5 s while endpoints are
+    removed, then closes, with a forced exit at 25 s.
+  - That makes a preStop sleep redundant; the 30 s grace period stays above the app's own
+    timeout. The other services keep a 5 s preStop sleep.
+- **Only real exporters are scraped.** A ServiceMonitor for a service without `/metrics` only
+  produces a permanently firing alert. The exporters' different names are normalised with
+  relabeling on the platform side, so the services did not have to change.
 - **support-agents runs as one replica.** LangGraph checkpoints live in SQLite on an
   `emptyDir`, which survives container restarts but not rescheduling. Scaling out needs the
   Postgres checkpointer first. The HPA was removed instead of hiding the problem.
@@ -341,7 +365,7 @@ This repository was written on a machine without Docker, kubectl, kind, helm or 
 
 - yamllint and YAML parsing of every manifest;
 - `bash -n` on the scripts;
-- the 83-test Python suite, covering the policy rules, kustomization paths and patch
+- the 88-test Python suite, covering the policy rules, kustomization paths and patch
   targets, the service contract across compose, Kustomize, Helm values and the smoke
   test, Argo CD paths and promotion rules, dashboard and alert queries against the
   metrics contract, runbook anchors and the canary wiring.
