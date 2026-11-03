@@ -1,0 +1,16 @@
+# Rollouts adds the canary ReplicaSet's pod-template-hash to this selector at runtime.
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-api-canary
+  labels:
+    app.kubernetes.io/name: orders-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: orders-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

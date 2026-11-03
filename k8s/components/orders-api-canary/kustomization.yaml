@@ -1,0 +1,22 @@
+# Opt-in progressive delivery for orders-api (requires the Argo Rollouts controller).
+# Add it to an overlay with `components: [../../components/orders-api-canary]`.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - rollout.yaml
+  - canary-service.yaml
+  - analysis-template.yaml
+
+patches:
+  # The HPA now scales the Rollout, which owns the pods; the Deployment is only a template.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: orders-api
+    patch: |-
+      - op: replace
+        path: /spec/scaleTargetRef
+        value:
+          apiVersion: argoproj.io/v1alpha1
+          kind: Rollout
+          name: orders-api

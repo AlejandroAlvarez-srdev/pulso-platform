@@ -1,0 +1,10 @@
+# Prod with the orders-api canary enabled. Rendered and validated in CI; switching prod over
+# is a one-line change in k8s/overlays/prod (see README > Progressive delivery).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../overlays/prod
+
+components:
+  - ../../components/orders-api-canary

@@ -183,9 +183,16 @@ def check_references(docs: list[dict]) -> list[str]:
                     errors.append(f"{_ref(ing)}: Service '{backend['name']}' has no port '{wanted}'")
 
     deployments = {d["metadata"]["name"]: d for d in _of_kind(docs, "Deployment")}
+    # An Argo Rollout with workloadRef owns the pods of the Deployment it references.
+    rollouts = {d["metadata"]["name"]: d for d in _of_kind(docs, "Rollout")}
     for hpa in _of_kind(docs, "HorizontalPodAutoscaler"):
         target = hpa["spec"]["scaleTargetRef"]
-        dep = deployments.get(target["name"]) if target["kind"] == "Deployment" else None
+        dep = None
+        if target["kind"] == "Deployment":
+            dep = deployments.get(target["name"])
+        elif target["kind"] == "Rollout" and target["name"] in rollouts:
+            ref = rollouts[target["name"]]["spec"].get("workloadRef") or {}
+            dep = deployments.get(ref.get("name"))
         if dep is None:
             errors.append(f"{_ref(hpa)}: scaleTargetRef {target['kind']}/{target['name']} does not exist")
         elif "replicas" in dep["spec"]:

@@ -22,6 +22,9 @@ kubeconform -strict -summary -kubernetes-version "${K8S_VERSION}" \
 for env in dev prod helm-dev helm-prod; do
   echo "== kube-linter (${env})"
   kube-linter lint "rendered/${env}"
+done
+
+for env in dev prod helm-dev helm-prod prod-canary; do
   echo "== platform policy (${env})"
   "${PYTHON}" scripts/policy_check.py "rendered/${env}/manifests.yaml"
 done

@@ -1,0 +1,46 @@
+# Argo Rollouts canary for orders-api. The Rollout adopts the existing Deployment through
+# workloadRef (the pod template stays in one place) and scales it down as it takes over.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: orders-api
+  labels:
+    app.kubernetes.io/name: orders-api
+    app.kubernetes.io/component: api
+spec:
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orders-api
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orders-api
+    scaleDown: progressively
+  strategy:
+    canary:
+      stableService: orders-api
+      canaryService: orders-api-canary
+      trafficRouting:
+        nginx:
+          # Rollouts clones this Ingress and shifts canary traffic with nginx canary weights.
+          stableIngress: pulso-public
+      # Error ratio is checked continuously from the first step; a failed run aborts and
+      # sends 100% of traffic back to the stable ReplicaSet.
+      analysis:
+        templates:
+          - templateName: orders-api-success-rate
+        startingStep: 1
+        args:
+          - name: canary-hash
+            valueFrom:
+              podTemplateHashValue: Latest
+      steps:
+        - setWeight: 10
+        - pause: {duration: 5m}
+        - setWeight: 25
+        - pause: {duration: 10m}
+        - setWeight: 50
+        - pause: {duration: 10m}
+        # Last gate before full promotion is a human: `kubectl argo rollouts promote orders-api`.
+        - pause: {}

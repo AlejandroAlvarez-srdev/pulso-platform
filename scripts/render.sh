@@ -13,7 +13,7 @@ else
   exit 1
 fi
 
-for pair in dev=k8s/overlays/dev prod=k8s/overlays/prod kind-smoke=k8s/ci/kind-smoke observability=k8s/observability; do
+for pair in dev=k8s/overlays/dev prod=k8s/overlays/prod kind-smoke=k8s/ci/kind-smoke observability=k8s/observability prod-canary=k8s/examples/prod-canary; do
   name="${pair%%=*}"
   dir="${pair#*=}"
   mkdir -p "rendered/${name}"

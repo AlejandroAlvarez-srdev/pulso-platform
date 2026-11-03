@@ -199,6 +199,13 @@ class PolicyCheckTest(unittest.TestCase):
         docs.append({"kind": "ExternalSecret", "metadata": {"name": "web"}, "spec": {"target": {"name": "web-secrets"}}})
         self.assertEqual(policy_check.check(docs), [])
 
+    def test_hpa_may_target_a_rollout_with_workload_ref(self):
+        docs = good_stack()
+        find(docs, "HorizontalPodAutoscaler")["spec"]["scaleTargetRef"] = {"kind": "Rollout", "name": "web"}
+        self.assertViolation(docs, "scaleTargetRef Rollout/web does not exist")
+        docs.append({"kind": "Rollout", "metadata": {"name": "web"}, "spec": {"workloadRef": {"kind": "Deployment", "name": "web"}}})
+        self.assertEqual(policy_check.check(docs), [])
+
     def test_selector_operators(self):
         labels = {"tier": "api"}
         self.assertTrue(policy_check.selector_matches({"matchExpressions": [{"key": "tier", "operator": "Exists"}]}, labels))

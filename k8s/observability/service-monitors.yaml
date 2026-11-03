@@ -26,3 +26,6 @@ spec:
       scrapeTimeout: 10s
   # The Service label app.kubernetes.io/name becomes the job label the dashboard filters on.
   jobLabel: app.kubernetes.io/name
+  # Lets the Argo Rollouts analysis tell canary series from stable ones.
+  podTargetLabels:
+    - rollouts-pod-template-hash
