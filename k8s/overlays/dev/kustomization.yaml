@@ -20,6 +20,9 @@ resources:
 images:
   - name: ghcr.io/pulso/pulso-orders-api
     newTag: dev
+  # Same release as orders-api: the migration image is its build stage.
+  - name: ghcr.io/pulso/pulso-orders-api-migrate
+    newTag: dev
   - name: ghcr.io/pulso/pulso-matching
     newTag: dev
   - name: ghcr.io/pulso/pulso-support-agents

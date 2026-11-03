@@ -19,7 +19,8 @@ from pathlib import Path
 
 import yaml
 
-WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet"}
+WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "Job"}
+LONG_RUNNING_KINDS = {"Deployment", "StatefulSet", "DaemonSet"}
 
 
 # --------------------------------------------------------------------------- loading
@@ -87,6 +88,8 @@ def check_workload(doc: dict) -> list[str]:
         errors.append(f"{ref}: pod seccompProfile must be RuntimeDefault")
     if doc["kind"] == "Deployment" and (doc["spec"].get("strategy") or {}).get("type") != "RollingUpdate":
         errors.append(f"{ref}: Deployment strategy must be RollingUpdate")
+    if doc["kind"] == "Job" and "ttlSecondsAfterFinished" not in doc["spec"]:
+        errors.append(f"{ref}: Job needs ttlSecondsAfterFinished (finished Jobs block re-applies)")
 
     for container in spec.get("containers", []) + spec.get("initContainers", []):
         cref = f"{ref}[{container.get('name')}]"
@@ -101,7 +104,7 @@ def check_workload(doc: dict) -> list[str]:
                 if resource not in (resources.get(section) or {}):
                     errors.append(f"{cref}: missing resources.{section}.{resource}")
 
-        probes = ["livenessProbe", "readinessProbe"]
+        probes = ["livenessProbe", "readinessProbe"] if doc["kind"] in LONG_RUNNING_KINDS else []
         if doc["kind"] == "Deployment":
             probes.append("startupProbe")
         for probe in probes:
@@ -134,6 +137,10 @@ def check_references(docs: list[dict]) -> list[str]:
         if sa and ("ServiceAccount", sa) not in names:
             errors.append(f"{_ref(wl)}: serviceAccountName '{sa}' has no ServiceAccount")
         for container in spec.get("containers", []):
+            for env in container.get("env", []):
+                ref = (env.get("valueFrom") or {}).get("secretKeyRef")
+                if ref and ("Secret", ref["name"]) not in names:
+                    errors.append(f"{_ref(wl)}: env {env['name']} references missing Secret '{ref['name']}'")
             for source in container.get("envFrom", []):
                 for key, kind in (("configMapRef", "ConfigMap"), ("secretRef", "Secret")):
                     if key in source and (kind, source[key]["name"]) not in names:

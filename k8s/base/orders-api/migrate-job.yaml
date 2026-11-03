@@ -1,0 +1,64 @@
+# Applies Prisma migrations and the idempotent demo seed before orders-api serves traffic.
+# The runtime image has no Prisma CLI, so this runs the repository's "build" stage, published
+# as pulso-orders-api-migrate. The TTL removes the finished Job, so every deploy re-runs it
+# (migrate deploy is a no-op when the schema is current) without hitting the immutable
+# pod template of an existing Job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orders-api-migrate
+  labels:
+    app.kubernetes.io/name: orders-api-migrate
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orders-api-migrate
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: orders-api
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/pulso/pulso-orders-api-migrate:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
+          env:
+            # npm and npx write caches and logs under $HOME; the root filesystem is read-only.
+            - name: HOME
+              value: /tmp
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orders-api-secrets
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

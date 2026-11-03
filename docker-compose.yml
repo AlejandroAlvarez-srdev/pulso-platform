@@ -56,6 +56,23 @@ services:
       <<: *healthcheck-timing
     restart: unless-stopped
 
+  # One-shot: Prisma migrations + idempotent demo seed, from the repo's "build" stage
+  # (the runtime image has no Prisma CLI). orders-api starts only after it succeeds.
+  orders-migrate:
+    <<: *hardening
+    build:
+      context: ../pulso-orders-api
+      target: build
+    image: ghcr.io/pulso/pulso-orders-api-migrate:dev
+    command: ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
+    environment:
+      HOME: /tmp
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulso}:${POSTGRES_PASSWORD:-pulso-dev-only}@postgres:5432/orders?schema=public
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   orders-api:
     <<: *hardening
     build:
@@ -71,8 +88,8 @@ services:
     ports:
       - "${ORDERS_API_PORT:-3000}:3000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      orders-migrate:
+        condition: service_completed_successfully
     # Slim runtime images ship without curl/wget, so probe with the runtime itself.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -132,6 +149,21 @@ services:
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       <<: *healthcheck-timing
+
+  # Saga participants (payments, matching, merchant) simulated over Redis Streams, so the
+  # orchestrator has something to talk to locally. Reuses the image built for "saga".
+  saga-participants:
+    <<: *hardening
+    image: ghcr.io/pulso/pulso-saga:dev
+    pull_policy: never
+    command: ["node", "dist/apps/fake-services.js"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      PAYMENT_FAILURE_RATE: "0.2"
+      PULSERS: "50"
+    depends_on:
+      saga:
+        condition: service_healthy
 
 volumes:
   postgres-data:

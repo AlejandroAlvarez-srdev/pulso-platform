@@ -76,10 +76,10 @@ class KustomizationStructureTest(unittest.TestCase):
         base_images = {
             c["image"].rsplit(":", 1)[0]
             for d in load_kustomization(BASE)
-            if d["kind"] == "Deployment"
+            if d["kind"] in ("Deployment", "Job")
             for c in d["spec"]["template"]["spec"]["containers"]
         }
-        self.assertEqual(base_images, {app[0] for app in APPS.values()})
+        self.assertEqual(base_images, {app[0] for app in APPS.values()} | {"ghcr.io/pulso/pulso-orders-api-migrate"})
         for overlay in (DEV, PROD, KIND_SMOKE):
             with self.subTest(overlay=overlay.name):
                 self.assertEqual({i["name"] for i in kustomization(overlay)["images"]}, base_images)
@@ -98,6 +98,8 @@ class KustomizationStructureTest(unittest.TestCase):
 
     def test_kind_smoke_placeholders_listen_on_real_ports(self):
         for patch in kustomization(KIND_SMOKE)["patches"]:
+            if patch["target"]["kind"] != "Deployment":
+                continue
             name = patch["target"]["name"]
             args = yaml.safe_load(patch["patch"])[0]["value"]
             self.assertIn(f"-listen=:{APPS[name][1]}", args)
@@ -138,8 +140,11 @@ class PortContractTest(unittest.TestCase):
             with self.subTest(service=name):
                 c = container(self.base, name)
                 self.assertEqual(c["ports"][0]["containerPort"], port)
-                for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+                for probe in ("startupProbe", "readinessProbe"):
                     self.assertEqual(c[probe]["httpGet"]["path"], health)
+                liveness = c["livenessProbe"]
+                # orders-api's /health checks Postgres, so its liveness must not depend on it.
+                self.assertEqual(liveness.get("httpGet", {}).get("path"), None if name == "orders-api" else health)
                 literals = generator_literals(BASE, f"{name}-config")
                 if name in READS_PORT_ENV:
                     self.assertEqual(literals["PORT"], str(port))
@@ -188,13 +193,21 @@ class ComposeTest(unittest.TestCase):
         for name in APPS:
             self.assertEqual(self.compose["services"][name]["build"]["context"], f"../pulso-{name}")
 
-    def test_dependencies_wait_for_health(self):
+    def test_dependencies_wait_for_health_or_completion(self):
         services = self.compose["services"]
         for name, svc in services.items():
             for dep, cond in svc.get("depends_on", {}).items():
                 with self.subTest(service=name, dependency=dep):
-                    self.assertEqual(cond["condition"], "service_healthy")
-                    self.assertIn("healthcheck", services[dep])
+                    if cond["condition"] == "service_completed_successfully":
+                        self.assertEqual(services[dep]["restart"], "no", "a one-shot must not restart")
+                    else:
+                        self.assertEqual(cond["condition"], "service_healthy")
+                        self.assertIn("healthcheck", services[dep])
+
+    def test_orders_api_waits_for_migrations(self):
+        services = self.compose["services"]
+        self.assertEqual(services["orders-api"]["depends_on"]["orders-migrate"]["condition"], "service_completed_successfully")
+        self.assertEqual(services["orders-migrate"]["build"]["target"], "build")
 
     def test_data_volumes_are_named(self):
         self.assertEqual(set(self.compose["volumes"]), {"postgres-data", "redis-data", "support-data"})

@@ -174,6 +174,24 @@ class PolicyCheckTest(unittest.TestCase):
         find(docs, "Namespace", "pulso")["metadata"]["labels"] = {}
         self.assertViolation(docs, "restricted")
 
+    def test_job_needs_ttl_but_no_probes(self):
+        docs = good_stack()
+        job = copy.deepcopy(find(docs, "Deployment"))
+        job["kind"], job["metadata"]["name"] = "Job", "migrate"
+        del job["spec"]["strategy"]
+        job["spec"]["ttlSecondsAfterFinished"] = 300
+        container = job["spec"]["template"]["spec"]["containers"][0]
+        for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+            del container[probe]
+        self.assertEqual(policy_check.check(docs + [job]), [])
+        del job["spec"]["ttlSecondsAfterFinished"]
+        self.assertViolation(docs + [job], "ttlSecondsAfterFinished")
+
+    def test_secret_key_ref_must_exist(self):
+        docs = good_stack()
+        container_of(docs)["env"] = [{"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "db", "key": "url"}}}]
+        self.assertViolation(docs, "references missing Secret 'db'")
+
     def test_selector_operators(self):
         labels = {"tier": "api"}
         self.assertTrue(policy_check.selector_matches({"matchExpressions": [{"key": "tier", "operator": "Exists"}]}, labels))

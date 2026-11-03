@@ -128,16 +128,18 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# orders-api (Prisma) -> Postgres. Dev targets the in-cluster StatefulSet; the prod overlay
-# replaces the destination with the managed instance's subnet.
+# orders-api and its migration Job (Prisma) -> Postgres. Dev targets the in-cluster
+# StatefulSet; the prod overlay replaces the destination with the managed instance's subnet.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: orders-api-postgres-egress
 spec:
   podSelector:
-    matchLabels:
-      app.kubernetes.io/name: orders-api
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["orders-api", "orders-api-migrate"]
   policyTypes: ["Egress"]
   egress:
     - to:

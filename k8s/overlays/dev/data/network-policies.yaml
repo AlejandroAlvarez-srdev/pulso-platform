@@ -11,8 +11,10 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: orders-api
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ["orders-api", "orders-api-migrate"]
       ports:
         - protocol: TCP
           port: 5432

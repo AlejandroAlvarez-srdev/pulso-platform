@@ -28,9 +28,20 @@ images:
   - name: ghcr.io/pulso/pulso-saga
     newName: hashicorp/http-echo
     newTag: 0.2.3
+  - name: ghcr.io/pulso/pulso-orders-api-migrate
+    newName: busybox
+    newTag: 1.36.1
 
 # http-echo answers 200 on every path, listening on each service's real port.
+# The migration Job only has to complete.
 patches:
+  - target:
+      kind: Job
+      name: orders-api-migrate
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/command
+        value: ["sh", "-c", "echo placeholder for prisma migrate deploy"]
   - target:
       kind: Deployment
       name: orders-api

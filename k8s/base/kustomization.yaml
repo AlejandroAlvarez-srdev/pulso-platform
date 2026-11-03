@@ -19,6 +19,7 @@ resources:
   - orders-api/service.yaml
   - orders-api/hpa.yaml
   - orders-api/pdb.yaml
+  - orders-api/migrate-job.yaml
   - matching/serviceaccount.yaml
   - matching/deployment.yaml
   - matching/service.yaml

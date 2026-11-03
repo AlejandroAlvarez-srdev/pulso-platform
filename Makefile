@@ -70,14 +70,18 @@ kind-load: ## Build the sibling repos' images and load them into kind (tag :dev)
 	  docker build -t ghcr.io/pulso/pulso-$$svc:dev ../pulso-$$svc && \
 	  kind load docker-image ghcr.io/pulso/pulso-$$svc:dev --name $(CLUSTER) || exit 1; \
 	done
+	docker build --target build -t ghcr.io/pulso/pulso-orders-api-migrate:dev ../pulso-orders-api
+	kind load docker-image ghcr.io/pulso/pulso-orders-api-migrate:dev --name $(CLUSTER)
 
 .PHONY: deploy-dev
 deploy-dev: ## Apply overlays/dev (real images, see kind-load) and wait for rollout
+	kubectl -n $(NAMESPACE) delete job orders-api-migrate --ignore-not-found
 	kubectl apply -k k8s/overlays/dev
 	./scripts/wait-ready.sh
 
 .PHONY: deploy-smoke
 deploy-smoke: ## Apply the CI overlay (dev + public placeholder images) and wait for rollout
+	kubectl -n $(NAMESPACE) delete job orders-api-migrate --ignore-not-found
 	kubectl apply -k k8s/ci/kind-smoke
 	./scripts/wait-ready.sh
 
