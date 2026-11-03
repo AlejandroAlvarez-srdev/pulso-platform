@@ -1,0 +1,24 @@
+# Materialises the Secret "orders-api-secrets" that the base manifests reference.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: orders-api-secrets
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: SecretStore
+  target:
+    name: orders-api-secrets
+    creationPolicy: Owner
+    # Keep the last good Secret if the ExternalSecret is deleted by mistake.
+    deletionPolicy: Retain
+  data:
+    - secretKey: DATABASE_URL
+      remoteRef:
+        key: pulso/prod/orders-api
+        property: DATABASE_URL
+    - secretKey: JWT_SECRET
+      remoteRef:
+        key: pulso/prod/orders-api
+        property: JWT_SECRET

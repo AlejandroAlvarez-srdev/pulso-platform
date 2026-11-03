@@ -192,6 +192,13 @@ class PolicyCheckTest(unittest.TestCase):
         container_of(docs)["env"] = [{"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "db", "key": "url"}}}]
         self.assertViolation(docs, "references missing Secret 'db'")
 
+    def test_external_secret_provides_the_secret(self):
+        docs = good_stack()
+        container_of(docs)["envFrom"].append({"secretRef": {"name": "web-secrets"}})
+        self.assertViolation(docs, "envFrom Secret 'web-secrets'")
+        docs.append({"kind": "ExternalSecret", "metadata": {"name": "web"}, "spec": {"target": {"name": "web-secrets"}}})
+        self.assertEqual(policy_check.check(docs), [])
+
     def test_selector_operators(self):
         labels = {"tier": "api"}
         self.assertTrue(policy_check.selector_matches({"matchExpressions": [{"key": "tier", "operator": "Exists"}]}, labels))

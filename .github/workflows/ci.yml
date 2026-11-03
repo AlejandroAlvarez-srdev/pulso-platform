@@ -85,10 +85,7 @@ jobs:
           kube-linter version
 
       - name: Render overlays (dev, prod, kind-smoke)
-        run: |
-          # Prod secrets are injected by the release pipeline; CI renders with the templates.
-          make prod-secrets-placeholder
-          make render
+        run: make render
 
       - name: kubeconform + kube-linter + platform policy
         run: ./scripts/validate.sh

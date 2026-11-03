@@ -130,6 +130,11 @@ def check_references(docs: list[dict]) -> list[str]:
     errors: list[str] = []
     workloads = list(_of_kind(docs, *WORKLOAD_KINDS))
     names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+    # An ExternalSecret materialises a Secret named after spec.target.name (default: its own name).
+    names |= {
+        ("Secret", (d.get("spec", {}).get("target") or {}).get("name") or d["metadata"]["name"])
+        for d in _of_kind(docs, "ExternalSecret")
+    }
 
     for wl in workloads:
         spec = _pod_spec(wl)

@@ -7,9 +7,6 @@ __pycache__/
 # Rendered manifests (make render)
 rendered/
 
-# Production secrets are injected by the release pipeline, never committed
-k8s/overlays/prod/secrets/*.env
-
 # Editors / OS
 .idea/
 .vscode/

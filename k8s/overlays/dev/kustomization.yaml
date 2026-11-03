@@ -51,7 +51,21 @@ configMapGenerator:
     files:
       - initdb.sql=data/postgres-init.sql
 
+# DUMMY values for local clusters only. Generated here rather than in base so that prod
+# can provide the same Secret names through External Secrets Operator.
 secretGenerator:
+  - name: orders-api-secrets
+    literals:
+      - DATABASE_URL=postgresql://pulso:pulso-dev-only@postgres:5432/orders?schema=public
+      # orders-api refuses to boot with a JWT secret shorter than 32 characters.
+      - JWT_SECRET=dev-only-jwt-secret-not-for-production
+  - name: support-agents-secrets
+    literals:
+      # Read only when PULSO_LLM_PROVIDER=anthropic.
+      - ANTHROPIC_API_KEY=dummy-anthropic-key
+  - name: saga-secrets
+    literals:
+      - REDIS_URL=redis://redis:6379/0
   - name: postgres-credentials
     literals:
       - POSTGRES_USER=pulso

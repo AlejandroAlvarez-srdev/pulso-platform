@@ -1,0 +1,20 @@
+# Materialises the Secret "support-agents-secrets" that the base manifests reference.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: support-agents-secrets
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: SecretStore
+  target:
+    name: support-agents-secrets
+    creationPolicy: Owner
+    # Keep the last good Secret if the ExternalSecret is deleted by mistake.
+    deletionPolicy: Retain
+  data:
+    - secretKey: ANTHROPIC_API_KEY
+      remoteRef:
+        key: pulso/prod/support-agents
+        property: ANTHROPIC_API_KEY

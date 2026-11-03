@@ -1,0 +1,20 @@
+# Materialises the Secret "saga-secrets" that the base manifests reference.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: saga-secrets
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: SecretStore
+  target:
+    name: saga-secrets
+    creationPolicy: Owner
+    # Keep the last good Secret if the ExternalSecret is deleted by mistake.
+    deletionPolicy: Retain
+  data:
+    - secretKey: REDIS_URL
+      remoteRef:
+        key: pulso/prod/saga
+        property: REDIS_URL

@@ -1,0 +1,6 @@
+# ESO-managed Secrets keep a fixed name (no content hash), so a rotation would not roll
+# the pods on its own; Stakater Reloader restarts a Deployment when a Secret it uses changes.
+- op: add
+  path: /metadata/annotations
+  value:
+    reloader.stakater.com/auto: "true"

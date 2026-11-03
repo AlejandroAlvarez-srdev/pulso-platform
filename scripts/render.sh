@@ -12,14 +12,6 @@ else
   exit 1
 fi
 
-for example in k8s/overlays/prod/secrets/*.env.example; do
-  if [[ ! -f "${example%.example}" ]]; then
-    echo "render: ${example%.example} is missing (the release pipeline writes it;" \
-      "run 'make prod-secrets-placeholder' to render with the templates)" >&2
-    exit 1
-  fi
-done
-
 for pair in dev=k8s/overlays/dev prod=k8s/overlays/prod kind-smoke=k8s/ci/kind-smoke; do
   name="${pair%%=*}"
   dir="${pair#*=}"

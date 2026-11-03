@@ -10,8 +10,14 @@ for tool in kubeconform kube-linter; do
   command -v "${tool}" >/dev/null 2>&1 || { echo "validate: ${tool} is not installed" >&2; exit 1; }
 done
 
+# Core schemas for the Kubernetes version, plus the community CRD catalog for
+# ExternalSecret, SecretStore and the other operator resources.
+CRD_CATALOG='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+
 echo "== kubeconform (Kubernetes ${K8S_VERSION}, strict)"
-kubeconform -strict -summary -kubernetes-version "${K8S_VERSION}" rendered/*/manifests.yaml
+kubeconform -strict -summary -kubernetes-version "${K8S_VERSION}" \
+  -schema-location default -schema-location "${CRD_CATALOG}" \
+  rendered/*/manifests.yaml
 
 for env in dev prod; do
   echo "== kube-linter (${env})"

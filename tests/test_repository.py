@@ -53,11 +53,7 @@ class KustomizationStructureTest(unittest.TestCase):
             for rel in paths:
                 with self.subTest(kustomization=directory.relative_to(ROOT), path=rel):
                     target = directory / rel
-                    if target.suffix == ".env" and "secrets" in target.parts:
-                        # Injected by the pipeline; the committed template must exist instead.
-                        self.assertTrue(target.with_name(target.name + ".example").is_file())
-                    else:
-                        self.assertTrue(target.exists(), f"{target} does not exist")
+                    self.assertTrue(target.exists(), f"{target} does not exist")
 
     def test_patch_targets_exist(self):
         for overlay in (DEV, PROD, KIND_SMOKE):
@@ -84,12 +80,22 @@ class KustomizationStructureTest(unittest.TestCase):
             with self.subTest(overlay=overlay.name):
                 self.assertEqual({i["name"] for i in kustomization(overlay)["images"]}, base_images)
 
-    def test_prod_overrides_every_secret(self):
-        base = {g["name"] for g in kustomization(BASE)["secretGenerator"]}
-        prod = {g["name"]: g for g in kustomization(PROD)["secretGenerator"]}
-        self.assertEqual(set(prod), base)
-        for gen in prod.values():
-            self.assertEqual(gen["behavior"], "replace")
+    def test_secrets_never_generated_for_prod(self):
+        self.assertNotIn("secretGenerator", kustomization(BASE))
+        self.assertNotIn("secretGenerator", kustomization(PROD))
+
+    def test_every_referenced_secret_has_an_external_secret_in_prod(self):
+        docs = load_kustomization(PROD)
+        referenced = set()
+        for d in docs:
+            if d["kind"] in ("Deployment", "Job"):
+                for c in d["spec"]["template"]["spec"]["containers"]:
+                    referenced |= {e["secretRef"]["name"] for e in c.get("envFrom", []) if "secretRef" in e}
+                    referenced |= {e["valueFrom"]["secretKeyRef"]["name"] for e in c.get("env", []) if "secretKeyRef" in e.get("valueFrom", {})}
+        external = {d["spec"]["target"]["name"] for d in docs if d["kind"] == "ExternalSecret"}
+        self.assertEqual(referenced, external)
+        dev = {g["name"] for g in kustomization(DEV)["secretGenerator"]}
+        self.assertLessEqual(referenced, dev, "dev must generate every Secret prod pulls from the store")
 
     def test_kind_smoke_uses_only_public_images(self):
         for image in kustomization(KIND_SMOKE)["images"]:
@@ -112,8 +118,8 @@ class KustomizationStructureTest(unittest.TestCase):
 class PolicyOnSourcesTest(unittest.TestCase):
     """The platform policy holds on the unpatched sources (CI re-runs it on rendered output)."""
 
-    def test_base_passes_policy(self):
-        self.assertEqual(policy_check.check(load_kustomization(BASE)), [])
+    def test_prod_sources_pass_policy(self):
+        self.assertEqual(policy_check.check(load_kustomization(PROD)), [])
 
     def test_dev_passes_policy(self):
         self.assertEqual(policy_check.check(load_kustomization(DEV)), [])

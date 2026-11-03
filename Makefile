@@ -28,10 +28,6 @@ lint: ## yamllint + shellcheck
 test: ## Policy unit tests and manifest/compose consistency tests
 	$(PYTHON) -m unittest discover -s tests -t . -v
 
-.PHONY: prod-secrets-placeholder
-prod-secrets-placeholder: ## Copy prod secret templates to *.env so the prod overlay renders (CI / local only)
-	@for f in k8s/overlays/prod/secrets/*.env.example; do cp -n "$$f" "$${f%.example}" || true; done
-
 .PHONY: render
 render: ## kustomize build every overlay into rendered/
 	./scripts/render.sh
