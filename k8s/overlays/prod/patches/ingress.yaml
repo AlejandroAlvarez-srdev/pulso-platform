@@ -1,0 +1,14 @@
+- op: replace
+  path: /spec/rules/0/host
+  value: api.pulso.example
+- op: add
+  path: /spec/tls
+  value:
+    - hosts: ["api.pulso.example"]
+      secretName: pulso-api-tls
+- op: add
+  path: /metadata/annotations/cert-manager.io~1cluster-issuer
+  value: letsencrypt-prod
+- op: add
+  path: /metadata/annotations/nginx.ingress.kubernetes.io~1force-ssl-redirect
+  value: "true"

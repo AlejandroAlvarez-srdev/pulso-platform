@@ -1,0 +1,76 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Repeated here so generator merges resolve against the base objects' namespace.
+namespace: pulso
+
+resources:
+  - ../../base
+
+# Immutable release tags; CI bumps these (never "latest").
+images:
+  - name: ghcr.io/pulso/pulso-orders-api
+    newTag: 1.4.2
+  - name: ghcr.io/pulso/pulso-matching
+    newTag: 0.9.1
+  - name: ghcr.io/pulso/pulso-support-agents
+    newTag: 0.6.0
+  - name: ghcr.io/pulso/pulso-saga
+    newTag: 1.1.0
+
+# Only the saga has a fixed count; the three APIs are sized by their HPAs.
+replicas:
+  - name: saga
+    count: 2
+
+patches:
+  - path: patches/hpa.yaml
+    target:
+      kind: HorizontalPodAutoscaler
+  - path: patches/orders-api.yaml
+  - path: patches/matching.yaml
+  - path: patches/support-agents.yaml
+  - path: patches/saga.yaml
+  - path: patches/ingress.yaml
+    target:
+      kind: Ingress
+      name: pulso-public
+  - path: patches/data-egress.yaml
+    target:
+      kind: NetworkPolicy
+      name: allow-data-egress
+
+# Heap caps follow the larger memory limits (~75%).
+configMapGenerator:
+  - name: orders-api-config
+    behavior: merge
+    literals:
+      - NODE_OPTIONS=--max-old-space-size=576
+  - name: matching-config
+    behavior: merge
+    literals:
+      - WEB_CONCURRENCY=4
+  - name: saga-config
+    behavior: merge
+    literals:
+      - NODE_OPTIONS=--max-old-space-size=288
+
+# Real values never live in git: the pipeline materialises secrets/*.env from the
+# secret manager right before `kustomize build` (`make prod-secrets-placeholder` for CI).
+secretGenerator:
+  - name: orders-api-secrets
+    behavior: replace
+    envs:
+      - secrets/orders-api.env
+  - name: matching-secrets
+    behavior: replace
+    envs:
+      - secrets/matching.env
+  - name: support-agents-secrets
+    behavior: replace
+    envs:
+      - secrets/support-agents.env
+  - name: saga-secrets
+    behavior: replace
+    envs:
+      - secrets/saga.env

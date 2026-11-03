@@ -1,0 +1,7 @@
+# Applied to every HorizontalPodAutoscaler: three replicas minimum, one per availability zone.
+- op: replace
+  path: /spec/minReplicas
+  value: 3
+- op: replace
+  path: /spec/maxReplicas
+  value: 12
