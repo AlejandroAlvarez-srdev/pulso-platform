@@ -1,0 +1,70 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pulso-services
+  labels:
+    app.kubernetes.io/part-of: pulso
+spec:
+  groups:
+    - name: pulso.red
+      rules:
+        - record: pulso:http_requests:rate5m
+          expr: sum by (job) (rate(http_requests_total{namespace="pulso"}[5m]))
+        - record: pulso:http_errors:ratio5m
+          expr: |
+            sum by (job) (rate(http_requests_total{namespace="pulso", status=~"5.."}[5m]))
+              / sum by (job) (rate(http_requests_total{namespace="pulso"}[5m]))
+        - record: pulso:http_latency:p95_5m
+          expr: histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket{namespace="pulso"}[5m])))
+        - alert: PulsoHighErrorRate
+          expr: pulso:http_errors:ratio5m > 0.05 and pulso:http_requests:rate5m > 0.1
+          for: 10m
+          labels:
+            severity: page
+          annotations:
+            summary: "{{ $labels.job }}: more than 5% of requests fail with 5xx"
+            runbook_url: https://github.com/pulso/pulso-platform/blob/main/docs/RUNBOOK.md#incident-checklist
+        - alert: PulsoHighLatency
+          expr: pulso:http_latency:p95_5m > 0.5
+          for: 10m
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ $labels.job }}: p95 latency above 500 ms"
+            runbook_url: https://github.com/pulso/pulso-platform/blob/main/docs/RUNBOOK.md#scaling-playbook
+    - name: pulso.workloads
+      rules:
+        - alert: PulsoMetricsMissing
+          expr: up{namespace="pulso"} == 0
+          for: 10m
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ $labels.job }} ({{ $labels.instance }}) is not serving /metrics"
+        - alert: PulsoPodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace="pulso"}[15m]) > 3
+          labels:
+            severity: page
+          annotations:
+            summary: "{{ $labels.pod }} restarted more than 3 times in 15 minutes"
+            runbook_url: https://github.com/pulso/pulso-platform/blob/main/docs/RUNBOOK.md#crashloopbackoff
+        - alert: PulsoContainerOOMKilled
+          expr: |
+            kube_pod_container_status_last_terminated_reason{namespace="pulso", reason="OOMKilled"} == 1
+              and on (namespace, pod, container)
+            increase(kube_pod_container_status_restarts_total{namespace="pulso"}[15m]) > 0
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ $labels.pod }}/{{ $labels.container }} was OOMKilled"
+            runbook_url: https://github.com/pulso/pulso-platform/blob/main/docs/RUNBOOK.md#oomkilled
+        - alert: PulsoHPAAtMaximum
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="pulso"}
+              >= kube_horizontalpodautoscaler_spec_max_replicas{namespace="pulso"}
+          for: 15m
+          labels:
+            severity: ticket
+          annotations:
+            summary: "HPA {{ $labels.horizontalpodautoscaler }} has been at maxReplicas for 15 minutes"
+            runbook_url: https://github.com/pulso/pulso-platform/blob/main/docs/RUNBOOK.md#scaling-playbook

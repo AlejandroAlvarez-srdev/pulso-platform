@@ -1,0 +1,28 @@
+# Prometheus scrapes every Pulso Service on its "http" port at /metrics.
+#
+# Metrics contract (what the dashboard and alerts query), per service:
+#   http_requests_total{method, route, status}                 counter
+#   http_request_duration_seconds_bucket{method, route, status, le}  histogram
+# prom-client (orders-api, saga) and prometheus-fastapi-instrumentator (matching,
+# support-agents) can both be configured to emit these names and labels.
+# None of the services exposes /metrics yet; until they do these targets report
+# up == 0 and PulsoMetricsMissing fires, which is the intended signal.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pulso-services
+  labels:
+    app.kubernetes.io/part-of: pulso
+spec:
+  selector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["orders-api", "matching", "support-agents", "saga"]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+  # The Service label app.kubernetes.io/name becomes the job label the dashboard filters on.
+  jobLabel: app.kubernetes.io/name

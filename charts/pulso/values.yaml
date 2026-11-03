@@ -189,6 +189,8 @@ networkPolicies:
   enabled: true
   # Namespace of the ingress controller allowed to reach public services.
   ingressNamespace: ingress-nginx
+  # Namespace of kube-prometheus-stack; empty disables the scrape policy.
+  prometheusNamespace: monitoring
 
 # inCluster: true runs Postgres and Redis as StatefulSets (dev only). Otherwise the services
 # use managed instances and egress is limited to these CIDRs.

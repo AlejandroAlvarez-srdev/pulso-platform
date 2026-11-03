@@ -1,0 +1,71 @@
+# Values for prometheus-community/kube-prometheus-stack (chart 65.x), installed in the
+# "monitoring" namespace (by Argo CD, see argocd/apps/monitoring.yaml, or by hand):
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     --version 65.1.1 --namespace monitoring --create-namespace \
+#     --values observability/kube-prometheus-stack/values.yaml
+fullnameOverride: kube-prometheus-stack
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors / PrometheusRules from every namespace, not only those
+    # labelled with this Helm release (k8s/observability lives in "pulso").
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    retention: 15d
+    retentionSize: 40GB
+    resources:
+      requests: {cpu: 250m, memory: 1Gi}
+      limits: {cpu: "1", memory: 2Gi}
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: 200m, memory: 128Mi}
+  config:
+    route:
+      receiver: "null"
+      group_by: ["alertname", "job"]
+      routes:
+        # severity=page goes to the on-call rotation, everything else to a ticket queue.
+        - matchers: ['severity="page"']
+          receiver: oncall
+        - matchers: ['severity="ticket"']
+          receiver: tickets
+    receivers:
+      - name: "null"
+      - name: oncall
+        webhook_configs:
+          - url: http://alert-router.monitoring.svc/oncall
+      - name: tickets
+        webhook_configs:
+          - url: http://alert-router.monitoring.svc/tickets
+
+grafana:
+  admin:
+    # Created out of band (or by an ExternalSecret); never a value in git.
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+  defaultDashboardsTimezone: browser
+
+kube-state-metrics:
+  # PulsoPodCrashLooping, PulsoContainerOOMKilled and PulsoHPAAtMaximum use these series.
+  metricLabelsAllowlist:
+    - pods=[app.kubernetes.io/name]

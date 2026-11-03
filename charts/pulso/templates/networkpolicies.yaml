@@ -34,6 +34,48 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+{{- if .Values.networkPolicies.prometheusNamespace }}
+---
+# Prometheus scrapes /metrics on each service port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "pulso.labels" (list $ "allow-prometheus-scrape") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          {{- range $name, $svc := .Values.services }}
+          {{- if $svc.enabled }}
+          - {{ $name }}
+          {{- end }}
+          {{- end }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicies.prometheusNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        {{- $ports := list }}
+        {{- range $name, $svc := .Values.services }}
+        {{- if $svc.enabled }}
+        {{- $ports = append $ports $svc.port }}
+        {{- end }}
+        {{- end }}
+        {{- range $port := $ports | uniq | sortAlpha }}
+        - protocol: TCP
+          port: {{ $port }}
+        {{- end }}
+{{- end }}
 {{- range $name, $svc := .Values.services }}
 {{- if $svc.enabled }}
 {{- $np := $svc.networkPolicy }}
