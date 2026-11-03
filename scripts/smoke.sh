@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Smoke test a deployed environment:
-#   1. kubectl port-forward to every Service and GET /health (always);
+#   1. kubectl port-forward to every Service and GET its health path (always);
 #   2. when INGRESS_HOST is set, go through ingress-nginx on localhost:80 and check that
 #      public routes answer and internal services are not exposed.
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-pulso}"
 INGRESS_HOST="${INGRESS_HOST:-}"
-SERVICES=("orders-api:13000" "matching:18000" "support-agents:18080" "saga:18090")
+# service:local-port:health-path (support-agents is the only one serving /healthz)
+SERVICES=("orders-api:13000:/health" "matching:18000:/health" "support-agents:18080:/healthz" "saga:18090:/health")
 
 pids=()
 cleanup() {
@@ -29,20 +30,19 @@ wait_for_200() {
 
 failures=0
 for entry in "${SERVICES[@]}"; do
-  svc="${entry%%:*}"
-  port="${entry##*:}"
+  IFS=: read -r svc port path <<<"${entry}"
   kubectl -n "${NAMESPACE}" port-forward "svc/${svc}" "${port}:80" >/dev/null 2>&1 &
   pids+=("$!")
-  if wait_for_200 "http://127.0.0.1:${port}/health"; then
-    echo "ok    svc/${svc} /health"
+  if wait_for_200 "http://127.0.0.1:${port}${path}"; then
+    echo "ok    svc/${svc} ${path}"
   else
-    echo "FAIL  svc/${svc} /health" >&2
+    echo "FAIL  svc/${svc} ${path}" >&2
     failures=$((failures + 1))
   fi
 done
 
 if [[ -n "${INGRESS_HOST}" ]]; then
-  for route in /api/orders/health /api/support/health; do
+  for route in /api/orders/health /api/support/healthz; do
     if wait_for_200 "http://127.0.0.1${route}" -H "Host: ${INGRESS_HOST}"; then
       echo "ok    ingress ${INGRESS_HOST}${route}"
     else

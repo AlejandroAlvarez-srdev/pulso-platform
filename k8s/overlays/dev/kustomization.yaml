@@ -39,21 +39,11 @@ configMapGenerator:
   - name: orders-api-config
     behavior: merge
     literals:
-      - LOG_LEVEL=debug
+      - NODE_ENV=development
   - name: matching-config
     behavior: merge
     literals:
-      - LOG_LEVEL=debug
       - WEB_CONCURRENCY=1
-  - name: support-agents-config
-    behavior: merge
-    literals:
-      - LOG_LEVEL=debug
-      - WEB_CONCURRENCY=1
-  - name: saga-config
-    behavior: merge
-    literals:
-      - LOG_LEVEL=debug
   - name: postgres-initdb
     files:
       - initdb.sql=data/postgres-init.sql

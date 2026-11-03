@@ -18,7 +18,8 @@ images:
   - name: ghcr.io/pulso/pulso-saga
     newTag: 1.1.0
 
-# Only the saga has a fixed count; the three APIs are sized by their HPAs.
+# saga has a fixed count; orders-api and matching are sized by their HPAs and
+# support-agents stays at one replica (see its Deployment).
 replicas:
   - name: saga
     count: 2
@@ -35,10 +36,14 @@ patches:
     target:
       kind: Ingress
       name: pulso-public
-  - path: patches/data-egress.yaml
+  - path: patches/postgres-egress.yaml
     target:
       kind: NetworkPolicy
-      name: allow-data-egress
+      name: orders-api-postgres-egress
+  - path: patches/redis-egress.yaml
+    target:
+      kind: NetworkPolicy
+      name: saga-redis-egress
 
 # Heap caps follow the larger memory limits (~75%).
 configMapGenerator:
@@ -50,6 +55,10 @@ configMapGenerator:
     behavior: merge
     literals:
       - WEB_CONCURRENCY=4
+  - name: support-agents-config
+    behavior: merge
+    literals:
+      - PULSO_LLM_PROVIDER=anthropic
   - name: saga-config
     behavior: merge
     literals:
@@ -62,10 +71,6 @@ secretGenerator:
     behavior: replace
     envs:
       - secrets/orders-api.env
-  - name: matching-secrets
-    behavior: replace
-    envs:
-      - secrets/matching.env
   - name: support-agents-secrets
     behavior: replace
     envs:

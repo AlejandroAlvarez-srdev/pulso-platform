@@ -64,18 +64,14 @@ services:
     environment:
       PORT: "3000"
       NODE_ENV: development
-      LOG_LEVEL: debug
-      DEFAULT_CURRENCY: MXN
-      EVENTS_STREAM: pulso.events
-      DATABASE_URL: postgres://${POSTGRES_USER:-pulso}:${POSTGRES_PASSWORD:-pulso-dev-only}@postgres:5432/orders
-      REDIS_URL: redis://redis:6379/0
-      PAYMENT_PROVIDER_API_KEY: ${PAYMENT_PROVIDER_API_KEY:-sk_test_dummy}
+      PERSISTENCE: prisma
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulso}:${POSTGRES_PASSWORD:-pulso-dev-only}@postgres:5432/orders?schema=public
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-not-for-production}
+      JWT_ISSUER: pulso-orders-api
     ports:
       - "${ORDERS_API_PORT:-3000}:3000"
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     # Slim runtime images ship without curl/wget, so probe with the runtime itself.
     healthcheck:
@@ -88,16 +84,11 @@ services:
       context: ../pulso-matching
     image: ghcr.io/pulso/pulso-matching:dev
     environment:
-      PORT: "8000"
-      LOG_LEVEL: debug
       WEB_CONCURRENCY: "1"
-      MATCHING_MAX_RADIUS_KM: "8"
-      REDIS_URL: redis://redis:6379/1
+      PULSO_MAX_RADIUS_KM: "8"
+      PULSO_MAX_ETA_MINUTES: "45"
     ports:
       - "${MATCHING_PORT:-8000}:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
       <<: *healthcheck-timing
@@ -108,24 +99,17 @@ services:
       context: ../pulso-support-agents
     image: ghcr.io/pulso/pulso-support-agents:dev
     environment:
-      PORT: "8080"
-      LOG_LEVEL: debug
       WEB_CONCURRENCY: "1"
-      ORDERS_API_URL: http://orders-api:3000
-      DATABASE_URL: postgres://${POSTGRES_USER:-pulso}:${POSTGRES_PASSWORD:-pulso-dev-only}@postgres:5432/support
-      REDIS_URL: redis://redis:6379/2
-      LLM_API_KEY: ${LLM_API_KEY:-dummy-llm-key}
+      PULSO_LLM_PROVIDER: ${PULSO_LLM_PROVIDER:-scripted}
+      PULSO_CHECKPOINT_DB: /data/threads.sqlite
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-dummy-anthropic-key}
+    # The image listens on :8000 (same as matching), so it is published on host port 8080.
     ports:
-      - "${SUPPORT_AGENTS_PORT:-8080}:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      orders-api:
-        condition: service_healthy
+      - "${SUPPORT_AGENTS_PORT:-8080}:8000"
+    volumes:
+      - support-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
       <<: *healthcheck-timing
 
   saga:
@@ -134,26 +118,16 @@ services:
       context: ../pulso-saga
     image: ghcr.io/pulso/pulso-saga:dev
     environment:
+      # The orchestrator defaults to :3000 (taken by orders-api); PORT moves it to 8090.
       PORT: "8090"
       NODE_ENV: development
-      LOG_LEVEL: debug
-      ORDERS_API_URL: http://orders-api:3000
-      MATCHING_URL: http://matching:8000
-      EVENTS_STREAM: pulso.events
-      PAYMENT_TIMEOUT_SECONDS: "30"
-      DATABASE_URL: postgres://${POSTGRES_USER:-pulso}:${POSTGRES_PASSWORD:-pulso-dev-only}@postgres:5432/saga
       REDIS_URL: redis://redis:6379/0
+      STEP_TIMEOUT_MS: "15000"
+      MAX_COMPENSATION_ATTEMPTS: "5"
     ports:
       - "${SAGA_PORT:-8090}:8090"
-    # The orchestrator calls both services synchronously, so it waits until they are healthy.
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
-        condition: service_healthy
-      orders-api:
-        condition: service_healthy
-      matching:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -162,3 +136,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  support-data:

@@ -1,4 +1,4 @@
-# Only application pods (api / worker components) may reach the dev data stores.
+# The dev data stores accept connections only from the service that owns them.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -11,10 +11,8 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: In
-                values: ["api", "worker"]
+            matchLabels:
+              app.kubernetes.io/name: orders-api
       ports:
         - protocol: TCP
           port: 5432
@@ -31,10 +29,8 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: In
-                values: ["api", "worker"]
+            matchLabels:
+              app.kubernetes.io/name: saga
       ports:
         - protocol: TCP
           port: 6379

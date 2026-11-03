@@ -1,0 +1,10 @@
+# Prod has no in-cluster Redis: allow the managed cache's private subnet instead.
+- op: replace
+  path: /spec/egress
+  value:
+    - to:
+        - ipBlock:
+            cidr: 10.40.1.0/24
+      ports:
+        - protocol: TCP
+          port: 6379

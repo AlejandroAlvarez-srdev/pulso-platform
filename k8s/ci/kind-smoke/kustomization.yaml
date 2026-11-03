@@ -51,7 +51,7 @@ patches:
     patch: |-
       - op: add
         path: /spec/template/spec/containers/0/args
-        value: ["-listen=:8080", "-text=pulso-support-agents placeholder"]
+        value: ["-listen=:8000", "-text=pulso-support-agents placeholder"]
   - target:
       kind: Deployment
       name: saga

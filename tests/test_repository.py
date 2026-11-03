@@ -7,6 +7,7 @@ import yaml
 
 from tests.support import (
     APPS,
+    READS_PORT_ENV,
     K8S,
     ROOT,
     all_kustomization_dirs,
@@ -78,7 +79,7 @@ class KustomizationStructureTest(unittest.TestCase):
             if d["kind"] == "Deployment"
             for c in d["spec"]["template"]["spec"]["containers"]
         }
-        self.assertEqual(base_images, {image for image, _ in APPS.values()})
+        self.assertEqual(base_images, {app[0] for app in APPS.values()})
         for overlay in (DEV, PROD, KIND_SMOKE):
             with self.subTest(overlay=overlay.name):
                 self.assertEqual({i["name"] for i in kustomization(overlay)["images"]}, base_images)
@@ -115,38 +116,52 @@ class PolicyOnSourcesTest(unittest.TestCase):
     def test_dev_passes_policy(self):
         self.assertEqual(policy_check.check(load_kustomization(DEV)), [])
 
-    def test_only_saga_sets_replicas(self):
-        hpa_targets = {
-            d["spec"]["scaleTargetRef"]["name"] for d in load_kustomization(BASE) if d["kind"] == "HorizontalPodAutoscaler"
-        }
-        self.assertEqual(hpa_targets, set(APPS) - {"saga"})
-        self.assertEqual([r["name"] for r in kustomization(PROD)["replicas"]], ["saga"])
+    def test_replica_ownership(self):
+        docs = load_kustomization(BASE)
+        hpa_targets = {d["spec"]["scaleTargetRef"]["name"] for d in docs if d["kind"] == "HorizontalPodAutoscaler"}
+        self.assertEqual(hpa_targets, {"orders-api", "matching"})
+        # SQLite checkpoints are per pod: support-agents must not be scaled out.
+        self.assertEqual(by_kind_name(docs)[("Deployment", "support-agents")]["spec"]["replicas"], 1)
+        self.assertNotIn("support-agents", [r["name"] for r in kustomization(PROD)["replicas"]])
 
 
 class PortContractTest(unittest.TestCase):
-    """One port per service, identical in compose, the Deployment, the ConfigMap and the NetworkPolicies."""
+    """Ports and health paths match the service repos in compose, Deployments, ConfigMaps, policies and smoke."""
 
     @classmethod
     def setUpClass(cls):
         cls.compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
         cls.base = load_kustomization(BASE)
 
-    def test_container_ports(self):
-        for name, (_, port) in APPS.items():
+    def test_container_ports_and_probes(self):
+        for name, (_, port, health) in APPS.items():
             with self.subTest(service=name):
-                self.assertEqual(container(self.base, name)["ports"][0]["containerPort"], port)
-                self.assertEqual(generator_literals(BASE, f"{name}-config")["PORT"], str(port))
+                c = container(self.base, name)
+                self.assertEqual(c["ports"][0]["containerPort"], port)
+                for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+                    self.assertEqual(c[probe]["httpGet"]["path"], health)
+                literals = generator_literals(BASE, f"{name}-config")
+                if name in READS_PORT_ENV:
+                    self.assertEqual(literals["PORT"], str(port))
+                else:
+                    self.assertNotIn("PORT", literals, "this image ignores PORT; setting it would mislead")
 
     def test_compose_ports_and_healthchecks(self):
-        for name, (_, port) in APPS.items():
+        for name, (_, port, health) in APPS.items():
             with self.subTest(service=name):
                 svc = self.compose["services"][name]
-                self.assertEqual(svc["environment"]["PORT"], str(port))
+                if name in READS_PORT_ENV:
+                    self.assertEqual(svc["environment"]["PORT"], str(port))
                 self.assertTrue(svc["ports"][0].endswith(f":{port}"))
-                self.assertIn(f"127.0.0.1:{port}/health", " ".join(svc["healthcheck"]["test"]))
+                self.assertIn(f"127.0.0.1:{port}{health}'", " ".join(svc["healthcheck"]["test"]))
+
+    def test_smoke_script_uses_health_paths(self):
+        smoke = (ROOT / "scripts" / "smoke.sh").read_text()
+        for name, (_, _, health) in APPS.items():
+            self.assertRegex(smoke, rf'"{name}:\d+:{health}"')
 
     def test_network_policy_ports_match_containers(self):
-        port_of = {name: port for name, (_, port) in APPS.items()}
+        port_of = {name: app[1] for name, app in APPS.items()}
         for policy in (d for d in self.base if d["kind"] == "NetworkPolicy"):
             target = policy["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/name")
             for rule in policy["spec"].get("ingress", []):
@@ -158,13 +173,10 @@ class PortContractTest(unittest.TestCase):
                     if dest in port_of:
                         self.assertEqual([p["port"] for p in rule["ports"]], [port_of[dest]], policy["metadata"]["name"])
 
-    def test_internal_urls_point_at_existing_services(self):
-        services = {d["metadata"]["name"] for d in self.base if d["kind"] == "Service"}
-        for name in APPS:
-            for key, value in generator_literals(BASE, f"{name}-config").items():
-                if key.endswith("_URL"):
-                    host = re.match(r"https?://([^:/]+)", value).group(1)
-                    self.assertIn(host, services, f"{name}-config {key}")
+    def test_ingress_routes_only_public_services(self):
+        ingress = by_kind_name(self.base)[("Ingress", "pulso-public")]
+        backends = {p["backend"]["service"]["name"] for r in ingress["spec"]["rules"] for p in r["http"]["paths"]}
+        self.assertEqual(backends, {"orders-api", "support-agents"})
 
 
 class ComposeTest(unittest.TestCase):
@@ -185,7 +197,7 @@ class ComposeTest(unittest.TestCase):
                     self.assertIn("healthcheck", services[dep])
 
     def test_data_volumes_are_named(self):
-        self.assertEqual(set(self.compose["volumes"]), {"postgres-data", "redis-data"})
+        self.assertEqual(set(self.compose["volumes"]), {"postgres-data", "redis-data", "support-data"})
 
     def test_app_containers_are_hardened(self):
         for name in APPS:
@@ -202,8 +214,10 @@ class ComposeTest(unittest.TestCase):
     def test_postgres_init_script_creates_every_database(self):
         sql = (DEV / "data" / "postgres-init.sql").read_text()
         urls = [v for s in self.compose["services"].values() for k, v in s.get("environment", {}).items() if k == "DATABASE_URL"]
+        self.assertTrue(urls)
         for url in urls:
-            self.assertIn(f"CREATE DATABASE {url.rsplit('/', 1)[1]};", sql)
+            database = url.rsplit("/", 1)[1].split("?", 1)[0]
+            self.assertIn(f"CREATE DATABASE {database};", sql)
 
 
 if __name__ == "__main__":

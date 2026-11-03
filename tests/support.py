@@ -20,12 +20,14 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import policy_check  # noqa: E402  (path set up above)
 
 APPS = {
-    # name: (image, port)
-    "orders-api": ("ghcr.io/pulso/pulso-orders-api", 3000),
-    "matching": ("ghcr.io/pulso/pulso-matching", 8000),
-    "support-agents": ("ghcr.io/pulso/pulso-support-agents", 8080),
-    "saga": ("ghcr.io/pulso/pulso-saga", 8090),
+    # name: (image, container port, health path) as served by each service repository
+    "orders-api": ("ghcr.io/pulso/pulso-orders-api", 3000, "/health"),
+    "matching": ("ghcr.io/pulso/pulso-matching", 8000, "/health"),
+    "support-agents": ("ghcr.io/pulso/pulso-support-agents", 8000, "/healthz"),
+    "saga": ("ghcr.io/pulso/pulso-saga", 8090, "/health"),
 }
+# Services whose port comes from $PORT; the two FastAPI images start uvicorn on a fixed :8000.
+READS_PORT_ENV = {"orders-api", "saga"}
 
 
 def read_yaml(path: Path) -> list[dict]:

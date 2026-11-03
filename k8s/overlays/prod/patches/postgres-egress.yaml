@@ -1,0 +1,11 @@
+# Prod has no in-cluster Postgres: allow the managed instance's private subnet instead
+# (placeholder CIDR; one per environment in a real setup).
+- op: replace
+  path: /spec/egress
+  value:
+    - to:
+        - ipBlock:
+            cidr: 10.40.0.0/24
+      ports:
+        - protocol: TCP
+          port: 5432

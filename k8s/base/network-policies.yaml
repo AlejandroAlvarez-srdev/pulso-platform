@@ -29,7 +29,7 @@ spec:
         - protocol: TCP
           port: 53
 ---
-# orders-api: public (via ingress-nginx) and called by saga and support-agents.
+# orders-api: public, via ingress-nginx.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -44,17 +44,11 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: saga
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: support-agents
       ports:
         - protocol: TCP
           port: 3000
 ---
-# support-agents: public (via ingress-nginx) only.
+# support-agents: public, via ingress-nginx.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -71,9 +65,10 @@ spec:
               kubernetes.io/metadata.name: ingress-nginx
       ports:
         - protocol: TCP
-          port: 8080
+          port: 8000
 ---
-# matching: internal, only the saga orchestrator asks for assignments.
+# matching: internal. The saga's assignment step is its only intended caller
+# (pulso-saga simulates that participant today, so the edge is the integration contract).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -92,7 +87,6 @@ spec:
         - protocol: TCP
           port: 8000
 ---
-# saga -> orders-api and matching (synchronous steps of the saga).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -106,49 +100,21 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: orders-api
-      ports:
-        - protocol: TCP
-          port: 3000
-    - to:
-        - podSelector:
-            matchLabels:
               app.kubernetes.io/name: matching
       ports:
         - protocol: TCP
           port: 8000
 ---
-# support-agents -> orders-api (order lookups for the agents' tools).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: support-agents-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: support-agents
-  policyTypes: ["Egress"]
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: orders-api
-      ports:
-        - protocol: TCP
-          port: 3000
----
-# Third-party HTTPS: payment provider (orders-api) and the LLM API (support-agents).
+# support-agents -> LLM provider over HTTPS (only used when PULSO_LLM_PROVIDER is a real one).
 # Private ranges are excluded so this rule can never be used to reach in-cluster services.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-external-https-egress
+  name: support-agents-external-egress
 spec:
   podSelector:
-    matchExpressions:
-      - key: app.kubernetes.io/name
-        operator: In
-        values: ["orders-api", "support-agents"]
+    matchLabels:
+      app.kubernetes.io/name: support-agents
   policyTypes: ["Egress"]
   egress:
     - to:
@@ -162,18 +128,16 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# Application pods -> Postgres and Redis. Dev points at in-cluster StatefulSets;
-# the prod overlay replaces the destinations with the managed services' CIDR.
+# orders-api (Prisma) -> Postgres. Dev targets the in-cluster StatefulSet; the prod overlay
+# replaces the destination with the managed instance's subnet.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-data-egress
+  name: orders-api-postgres-egress
 spec:
   podSelector:
-    matchExpressions:
-      - key: app.kubernetes.io/component
-        operator: In
-        values: ["api", "worker"]
+    matchLabels:
+      app.kubernetes.io/name: orders-api
   policyTypes: ["Egress"]
   egress:
     - to:
@@ -183,6 +147,18 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+---
+# saga -> Redis Streams (saga state, outbox and participant messages). Same dev/prod split.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saga-redis-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: saga
+  policyTypes: ["Egress"]
+  egress:
     - to:
         - podSelector:
             matchLabels:

@@ -27,65 +27,59 @@ resources:
   - support-agents/serviceaccount.yaml
   - support-agents/deployment.yaml
   - support-agents/service.yaml
-  - support-agents/hpa.yaml
   - support-agents/pdb.yaml
   - saga/serviceaccount.yaml
   - saga/deployment.yaml
   - saga/service.yaml
   - saga/pdb.yaml
 
-# Non-secret runtime configuration. Generated names carry a content hash, so changing
-# a value rolls the Deployments that reference it.
+# Non-secret runtime configuration, limited to variables the services actually read.
+# Generated names carry a content hash, so changing a value rolls the Deployments.
 configMapGenerator:
   - name: orders-api-config
     literals:
       - PORT=3000
       - NODE_ENV=production
-      - LOG_LEVEL=info
+      - PERSISTENCE=prisma
+      - JWT_ISSUER=pulso-orders-api
+      - JWT_TTL_SECONDS=3600
       # ~75% of the memory limit; keeps V8 below the cgroup limit instead of getting OOMKilled.
       - NODE_OPTIONS=--max-old-space-size=288
-      - DEFAULT_CURRENCY=MXN
-      - EVENTS_STREAM=pulso.events
   - name: matching-config
     literals:
-      - PORT=8000
-      - LOG_LEVEL=info
+      # The image starts uvicorn on :8000; WEB_CONCURRENCY sets its worker count.
       - WEB_CONCURRENCY=2
-      - MATCHING_MAX_RADIUS_KM=8
+      - PULSO_MAX_RADIUS_KM=8
+      - PULSO_MAX_ETA_MINUTES=45
   - name: support-agents-config
     literals:
-      - PORT=8080
-      - LOG_LEVEL=info
-      - WEB_CONCURRENCY=2
-      - ORDERS_API_URL=http://orders-api
+      # "scripted" is the offline deterministic model; prod switches to a real provider.
+      - PULSO_LLM_PROVIDER=scripted
+      - PULSO_MAX_AGENT_STEPS=6
+      - PULSO_REFUND_THRESHOLD_CENTS=50000
+      - PULSO_CHECKPOINT_DB=/data/threads.sqlite
+      # One worker: SQLite has a single writer.
+      - WEB_CONCURRENCY=1
   - name: saga-config
     literals:
       - PORT=8090
       - NODE_ENV=production
-      - LOG_LEVEL=info
       - NODE_OPTIONS=--max-old-space-size=192
-      - ORDERS_API_URL=http://orders-api
-      - MATCHING_URL=http://matching
-      - EVENTS_STREAM=pulso.events
-      - PAYMENT_TIMEOUT_SECONDS=30
+      - STEP_TIMEOUT_MS=15000
+      - MAX_COMPENSATION_ATTEMPTS=5
 
 # DUMMY values, valid only for local clusters. The prod overlay replaces every one of
 # these Secrets with values injected by the release pipeline (see README > Secrets).
 secretGenerator:
   - name: orders-api-secrets
     literals:
-      - DATABASE_URL=postgres://pulso:pulso-dev-only@postgres:5432/orders
-      - REDIS_URL=redis://redis:6379/0
-      - PAYMENT_PROVIDER_API_KEY=sk_test_dummy
-  - name: matching-secrets
-    literals:
-      - REDIS_URL=redis://redis:6379/1
+      - DATABASE_URL=postgresql://pulso:pulso-dev-only@postgres:5432/orders?schema=public
+      # orders-api refuses to boot with a JWT secret shorter than 32 characters.
+      - JWT_SECRET=dev-only-jwt-secret-not-for-production
   - name: support-agents-secrets
     literals:
-      - DATABASE_URL=postgres://pulso:pulso-dev-only@postgres:5432/support
-      - REDIS_URL=redis://redis:6379/2
-      - LLM_API_KEY=dummy-llm-key
+      # Read only when PULSO_LLM_PROVIDER=anthropic.
+      - ANTHROPIC_API_KEY=dummy-anthropic-key
   - name: saga-secrets
     literals:
-      - DATABASE_URL=postgres://pulso:pulso-dev-only@postgres:5432/saga
       - REDIS_URL=redis://redis:6379/0
