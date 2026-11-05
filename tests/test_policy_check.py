@@ -222,5 +222,97 @@ class PolicyCheckTest(unittest.TestCase):
         self.assertEqual(docs, snapshot)
 
 
+def two_tier_stack() -> list[dict]:
+    """good_stack plus an internal `api` Deployment that `web` calls on its named port."""
+    docs = good_stack()
+    api = copy.deepcopy(find(docs, "Deployment"))
+    api["metadata"]["name"] = "api"
+    api["spec"]["selector"]["matchLabels"] = {"app.kubernetes.io/name": "api"}
+    api["spec"]["template"]["metadata"]["labels"] = {"app.kubernetes.io/name": "api"}
+    api["spec"]["template"]["spec"]["containers"][0]["ports"] = [{"name": "grpc", "containerPort": 9000}]
+    to_api = {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "api"}}}
+    from_web = {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "web"}}}
+    return docs + [
+        api,
+        {"kind": "PodDisruptionBudget", "metadata": {"name": "api"},
+         "spec": {"maxUnavailable": 1, "selector": {"matchLabels": {"app.kubernetes.io/name": "api"}}}},
+        {"kind": "NetworkPolicy", "metadata": {"name": "web-egress"},
+         "spec": {"podSelector": from_web["podSelector"], "policyTypes": ["Egress"],
+                  "egress": [{"to": [to_api], "ports": [{"protocol": "TCP", "port": 9000}]}]}},
+        {"kind": "NetworkPolicy", "metadata": {"name": "api-ingress"},
+         "spec": {"podSelector": to_api["podSelector"], "policyTypes": ["Ingress"],
+                  "ingress": [{"from": [from_web], "ports": [{"protocol": "TCP", "port": "grpc"}]}]}},
+    ]
+
+
+class NetworkEdgeTest(unittest.TestCase):
+    """Under default deny an in-namespace edge needs an egress rule and an ingress rule."""
+
+    def violations(self, docs):
+        return [e for e in policy_check.check(docs) if "NetworkPolicy/" in e]
+
+    def test_edge_open_on_both_ends_passes(self):
+        # Egress by number, ingress by port name: both resolve to the same container port.
+        self.assertEqual(policy_check.check(two_tier_stack()), [])
+
+    def test_egress_without_matching_ingress(self):
+        docs = [d for d in two_tier_stack() if d["metadata"]["name"] != "api-ingress"]
+        self.assertEqual(self.violations(docs), [
+            "NetworkPolicy/web-egress: Deployment/web -> Deployment/api on TCP/9000 is open on one end only; "
+            "no Ingress rule on Deployment/api allows it",
+        ])
+
+    def test_ingress_without_matching_egress(self):
+        docs = [d for d in two_tier_stack() if d["metadata"]["name"] != "web-egress"]
+        self.assertEqual(self.violations(docs), [
+            "NetworkPolicy/api-ingress: Deployment/web -> Deployment/api on TCP/grpc is open on one end only; "
+            "no Egress rule on Deployment/web allows it",
+        ])
+
+    def test_halves_on_different_ports(self):
+        docs = two_tier_stack()
+        find(docs, "NetworkPolicy", "web-egress")["spec"]["egress"][0]["ports"][0]["port"] = 8080
+        errors = self.violations(docs)
+        self.assertIn(
+            "NetworkPolicy/web-egress: allows TCP/8080 between Deployment/web and Deployment/api, "
+            "but Deployment/api does not serve it", errors)
+        self.assertTrue(any("api-ingress" in e and "no Egress rule on Deployment/web" in e for e in errors), errors)
+
+    def test_protocol_must_match(self):
+        docs = two_tier_stack()
+        find(docs, "NetworkPolicy", "api-ingress")["spec"]["ingress"][0]["ports"][0]["protocol"] = "UDP"
+        self.assertTrue(any("does not serve it" in e for e in self.violations(docs)))
+
+    def test_rule_without_ports_or_peers_allows_everything(self):
+        docs = two_tier_stack()
+        find(docs, "NetworkPolicy", "api-ingress")["spec"]["ingress"] = [{}]
+        self.assertEqual(policy_check.check(docs), [])
+
+    def test_policy_types_default_from_the_rules(self):
+        # Without policyTypes, a policy with egress rules is an Egress policy too.
+        docs = two_tier_stack()
+        del find(docs, "NetworkPolicy", "web-egress")["spec"]["policyTypes"]
+        self.assertEqual(policy_check.check(docs), [])
+
+    def test_unrestricted_end_needs_no_rule(self):
+        # Without a default-deny for Egress, web's egress is open and only api's ingress matters.
+        docs = [d for d in two_tier_stack() if d["metadata"]["name"] != "web-egress"]
+        find(docs, "NetworkPolicy", "deny")["spec"]["policyTypes"] = ["Ingress"]
+        self.assertEqual(self.violations(docs), [])
+
+    def test_peers_outside_the_namespace_are_not_checked(self):
+        docs = two_tier_stack()
+        peer = find(docs, "NetworkPolicy", "api-ingress")["spec"]["ingress"][0]["from"][0]
+        peer["namespaceSelector"] = {"matchLabels": {"kubernetes.io/metadata.name": "ingress-nginx"}}
+        # api now only admits ingress-nginx, so web's egress rule is the half left open.
+        self.assertEqual(len(self.violations(docs)), 1)
+        self.assertIn("no Ingress rule on Deployment/api", self.violations(docs)[0])
+
+    def test_destination_without_ports_is_skipped(self):
+        docs = two_tier_stack()
+        find(docs, "Deployment", "api")["spec"]["template"]["spec"]["containers"][0].pop("ports")
+        self.assertEqual(self.violations(docs), [])
+
+
 if __name__ == "__main__":
     unittest.main()

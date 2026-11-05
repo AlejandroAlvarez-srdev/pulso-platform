@@ -222,11 +222,125 @@ def check_references(docs: list[dict]) -> list[str]:
         if selector and not any(selector_matches(selector, _template_labels(w)) for w in workloads):
             errors.append(f"{_ref(policy)}: podSelector matches no workload")
 
+    errors.extend(check_network_edges(workloads, policies))
+
     for ns in _of_kind(docs, "Namespace"):
         labels = ns["metadata"].get("labels") or {}
         if labels.get("pod-security.kubernetes.io/enforce") != "restricted":
             errors.append(f"{_ref(ns)}: Pod Security Admission must enforce 'restricted'")
     return errors
+
+
+# --------------------------------------------------------------------------- network edges
+
+
+def _policy_types(policy: dict) -> set[str]:
+    """Effective policyTypes: the API defaults to Ingress, plus Egress when egress rules exist."""
+    spec = policy["spec"]
+    if spec.get("policyTypes"):
+        return set(spec["policyTypes"])
+    return {"Ingress"} | ({"Egress"} if spec.get("egress") else set())
+
+
+def _resolve_port(workload: dict, protocol: str, port: int | str) -> set[int]:
+    """Container port numbers a NetworkPolicy port (number or name) means on this workload."""
+    return {
+        p["containerPort"]
+        for c in _pod_spec(workload).get("containers", [])
+        for p in c.get("ports", [])
+        if p.get("protocol", "TCP") == protocol and port in (p["containerPort"], p.get("name"))
+    }
+
+
+def _in_namespace_selector(peer: dict) -> dict | None:
+    """The podSelector of a peer meaning "pods of this namespace"; None for any other peer.
+
+    namespaceSelector and ipBlock peers point outside the rendered manifests (ingress-nginx,
+    Prometheus, managed databases), so the other end of those edges cannot be checked here.
+    """
+    if "namespaceSelector" in peer or "ipBlock" in peer:
+        return None
+    return peer.get("podSelector")
+
+
+def _rule_ports(rule: dict) -> list[tuple[str, int | str]] | None:
+    """(protocol, port) pairs a rule allows; None means every port."""
+    if not rule.get("ports"):
+        return None
+    return [(p.get("protocol", "TCP"), p["port"]) for p in rule["ports"] if "port" in p]
+
+
+_SIDES = {"Ingress": ("ingress", "from"), "Egress": ("egress", "to")}
+
+
+def _allows(policies: list[dict], direction: str, pod: dict, peer: dict, dst: dict, protocol: str, port: int) -> bool:
+    """Does `pod`'s side allow this connection? (Ingress: from `peer`; Egress: to `peer`.)
+
+    A pod no policy of that direction selects is unrestricted; otherwise policies are
+    additive, so one matching rule in any selecting policy is enough.
+    """
+    rules_key, peers_key = _SIDES[direction]
+    selecting = [
+        p for p in policies
+        if direction in _policy_types(p) and selector_matches(p["spec"].get("podSelector"), _template_labels(pod))
+    ]
+    if not selecting:
+        return True
+    for policy in selecting:
+        for rule in policy["spec"].get(rules_key) or []:
+            ports = _rule_ports(rule)
+            if ports is not None and not any(port in _resolve_port(dst, proto, p) for proto, p in ports if proto == protocol):
+                continue
+            peers = rule.get(peers_key)
+            if not peers:
+                return True
+            for candidate in peers:
+                selector = _in_namespace_selector(candidate)
+                if selector is not None and selector_matches(selector, _template_labels(peer)):
+                    return True
+    return False
+
+
+def check_network_edges(workloads: list[dict], policies: list[dict]) -> list[str]:
+    """Every in-namespace edge must be open on both ends, on a port the destination serves.
+
+    Under default deny, saga -> matching needs an egress rule on saga *and* an ingress rule
+    on matching. Writing only one half is the classic mistake: the manifests are valid, every
+    linter passes, and the connection times out at runtime. Peers that select no workload are
+    skipped here: the prod overlay swaps them for ipBlocks with patches.
+    """
+    errors: set[str] = set()
+    for policy in policies:
+        selected = [w for w in workloads if selector_matches(policy["spec"].get("podSelector"), _template_labels(w))]
+        for direction in _policy_types(policy):
+            rules_key, peers_key = _SIDES[direction]
+            reverse = "Egress" if direction == "Ingress" else "Ingress"
+            for rule in policy["spec"].get(rules_key) or []:
+                for peer in rule.get(peers_key) or []:
+                    selector = _in_namespace_selector(peer)
+                    if selector is None:
+                        continue
+                    for pod in selected:
+                        for other in (w for w in workloads if selector_matches(selector, _template_labels(w))):
+                            src, dst = (other, pod) if direction == "Ingress" else (pod, other)
+                            if not any(c.get("ports") for c in _pod_spec(dst).get("containers", [])):
+                                continue  # e.g. a Job: nothing connects to it
+                            ports = _rule_ports(rule)
+                            if ports is None:
+                                ports = [(p.get("protocol", "TCP"), p["containerPort"])
+                                         for c in _pod_spec(dst)["containers"] for p in c.get("ports", [])]
+                            for protocol, port in ports:
+                                numbers = _resolve_port(dst, protocol, port)
+                                if not numbers:
+                                    errors.add(f"{_ref(policy)}: allows {protocol}/{port} between {_ref(src)} "
+                                               f"and {_ref(dst)}, but {_ref(dst)} does not serve it")
+                                    continue
+                                far_end = src if reverse == "Egress" else dst
+                                near_peer = dst if reverse == "Egress" else src
+                                if not any(_allows(policies, reverse, far_end, near_peer, dst, protocol, n) for n in numbers):
+                                    errors.add(f"{_ref(policy)}: {_ref(src)} -> {_ref(dst)} on {protocol}/{port} is "
+                                               f"open on one end only; no {reverse} rule on {_ref(far_end)} allows it")
+    return sorted(errors)
 
 
 def check(docs: list[dict]) -> list[str]:

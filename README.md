@@ -370,7 +370,14 @@ See **[docs/RUNBOOK.md](docs/RUNBOOK.md)**. It covers:
 - **A canary with an automated gate and a human final step.** The analysis catches regressions
   at 10% of traffic. Promotion past 50% stays a human decision while the metrics are new.
 - **Zero-trust networking.** Default deny, then one policy per edge, including Prometheus
-  scraping and the migration Job. External HTTPS excludes RFC 1918 ranges.
+  scraping and the migration Job. External HTTPS excludes RFC 1918 ranges. Under default
+  deny an in-namespace edge needs two rules, egress on the caller and ingress on the callee,
+  and writing only one half passes every schema and linter and then times out at runtime.
+  `policy_check.py` therefore resolves every pod-to-pod edge in the rendered manifests
+  (named ports, protocols, `matchExpressions`, implicit `policyTypes`) and fails if either
+  end does not allow it or the destination does not serve the port. Edges to other
+  namespaces or ipBlocks (ingress-nginx, Prometheus, managed databases) have their other
+  end outside the render and are not checked.
 - **Postgres and Redis in-cluster only for dev.** Backups, PITR and failover belong to managed
   services. Prod has no StatefulSets.
 - **Layered validation.** Schemas on three Kubernetes versions, kube-linter, trivy, a
