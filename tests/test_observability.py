@@ -149,6 +149,21 @@ class AlertRulesTest(unittest.TestCase):
                     self.assertIn(rule["labels"]["severity"], routed, rule["alert"])
                     self.assertIn("summary", rule["annotations"])
 
+    def test_every_exporter_alerts_when_its_target_disappears(self):
+        # up == 0 cannot fire without a target; absent() covers a ServiceMonitor that selects nothing.
+        alerts = {r["alert"]: r for g in rules() for r in g["rules"] if "alert" in r}
+        expr = alerts["PulsoMetricsTargetMissing"]["expr"]
+        jobs = set(re.findall(r'absent\(up\{namespace="pulso", job="([a-z-]+)"\}\)', expr))
+        self.assertEqual(jobs, set(METRICS))
+
+    def test_ratio_and_quantile_alerts_have_a_traffic_floor(self):
+        # A ratio or a p95 over a handful of requests is noise; both RED alerts need volume.
+        for group in rules():
+            for rule in group["rules"]:
+                if "alert" in rule and re.search(r"pulso:http_(errors|latency):", rule["expr"]):
+                    with self.subTest(alert=rule["alert"]):
+                        self.assertRegex(rule["expr"], r"and pulso:http_requests:rate5m > ")
+
 
 if __name__ == "__main__":
     unittest.main()

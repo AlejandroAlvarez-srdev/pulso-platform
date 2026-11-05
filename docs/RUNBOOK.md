@@ -234,7 +234,11 @@ These are the only scraped services; support-agents and saga have no exporter ye
    its `(?!metrics(?:/|$))` lookahead (base `ingress.yaml` or the chart). Do not fix it
    with a second Ingress on the same host: ingress-nginx sorts regex locations by length,
    and annotations such as source ranges leak onto the host's default location.
-5. **Panels empty but the target is up:** the exporter renamed its histogram or status
+5. **`PulsoMetricsTargetMissing` (no target at all):** Status → Targets has no
+   `serviceMonitor/pulso/<service>` entry. Check that the Service still carries
+   `app.kubernetes.io/name: <service>`, that its port is still named `http`, and that the
+   ServiceMonitor exists in `pulso` (`kubectl -n pulso get servicemonitor`).
+6. **Panels empty but the target is up:** the exporter renamed its histogram or status
    label. Update the `metricRelabelings` in `k8s/observability/service-monitors.yaml`.
 
 ### 502/503 during deploys

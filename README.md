@@ -260,8 +260,12 @@ the same histogram.
   name. `metricRelabelings` normalise their request histograms (see the contract below).
 - **PrometheusRule** `pulso-services`:
   - RED recording rules;
-  - `PulsoHighErrorRate` (5xx above 5%, page) and `PulsoHighLatency` (p95 above 500 ms);
-  - `PulsoMetricsTargetDown`, `PulsoPodCrashLooping`, `PulsoContainerOOMKilled` and `PulsoHPAAtMaximum`.
+  - `PulsoHighErrorRate` (5xx above 5%, page) and `PulsoHighLatency` (p95 above 500 ms),
+    both only above 0.1 req/s, so one slow or failed call at night is not an alert;
+  - `PulsoMetricsTargetDown` (`up == 0`) and `PulsoMetricsTargetMissing` (`absent(up)` per
+    exporter). The first cannot fire once the target itself is gone, which is what happens
+    when a Service label or port name drifts away from its ServiceMonitor;
+  - `PulsoPodCrashLooping`, `PulsoContainerOOMKilled` and `PulsoHPAAtMaximum`.
 
   Each alert links to its section in `docs/RUNBOOK.md`.
 - **Grafana dashboard** "Pulso / Services (RED)": throughput, 5xx ratio, p50/p95/p99, p95
@@ -391,7 +395,7 @@ This repository was written on a machine without Docker, kubectl, kind, helm or 
 
 - yamllint and YAML parsing of every manifest;
 - `bash -n` on the scripts;
-- the 88-test Python suite, covering the policy rules, kustomization paths and patch
+- the 101-test Python suite, covering the policy rules, kustomization paths and patch
   targets, the service contract across compose, Kustomize, Helm values and the smoke
   test, Argo CD paths and promotion rules, dashboard and alert queries against the
   metrics contract, runbook anchors and the canary wiring.
